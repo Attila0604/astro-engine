@@ -1,0 +1,7 @@
+# nixpacks.toml
+# Stellt die System-Bibliothek libsqlite3 bereit, die Railways Standard-Image
+# nicht mitbringt. kerykeion -> requests-cache braucht Pythons sqlite3-Modul,
+# das gegen libsqlite3.so.0 gelinkt ist.
+# "..." behaelt die automatisch erkannten Pakete (Python etc.) und ergaenzt sqlite.
+[phases.setup]
+nixPkgs = ["...", "sqlite"]
