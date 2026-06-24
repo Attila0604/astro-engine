@@ -1,7 +1,11 @@
 # nixpacks.toml
-# Stellt die System-Bibliothek libsqlite3 bereit, die Railways Standard-Image
-# nicht mitbringt. kerykeion -> requests-cache braucht Pythons sqlite3-Modul,
-# das gegen libsqlite3.so.0 gelinkt ist.
-# "..." behaelt die automatisch erkannten Pakete (Python etc.) und ergaenzt sqlite.
+# Fix fuer: ImportError: libsqlite3.so.0: cannot open shared object file
+# kerykeion -> requests-cache -> Pythons sqlite3 braucht libsqlite3.so.0 zur Laufzeit.
+#
+#   nixPkgs : macht das sqlite-Paket verfuegbar
+#   nixLibs : haengt dessen Bibliotheken in LD_LIBRARY_PATH (das war der fehlende Teil)
+#   aptPkgs : Fallback ueber den Standard-Debian-Pfad
 [phases.setup]
 nixPkgs = ["...", "sqlite"]
+nixLibs = ["sqlite"]
+aptPkgs = ["libsqlite3-0"]
