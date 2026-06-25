@@ -17,8 +17,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 import chart_engine as ce
+from analysis import generate_full_analysis
 
-app = FastAPI(title="RGYM Astro Engine", version="1.0")
+app = FastAPI(title="RGYM Astro Engine", version="1.1")
 
 
 class PersonIn(BaseModel):
@@ -48,7 +49,7 @@ def health():
     return {
         "ok": True,
         "service": "astro-engine",
-        "endpoints": ["/chart", "/transits", "/synastry", "/demo"],
+        "endpoints": ["/chart", "/transits", "/synastry", "/analysis", "/demo"],
     }
 
 
@@ -65,6 +66,12 @@ def transits(t: TransitIn):
 @app.post("/synastry")
 def synastry(s: SynastryIn):
     return ce.compute_synastry(s.person_a.model_dump(), s.person_b.model_dump())
+
+
+@app.post("/analysis")
+async def analysis(p: PersonIn):
+    """Komplette Tiefen-Analyse (Multi-Agent, Claude). Braucht ANTHROPIC_API_KEY."""
+    return await generate_full_analysis(p.model_dump())
 
 
 @app.get("/demo")
