@@ -1,12 +1,13 @@
 """
 main.py
-Duenner FastAPI-Wrapper, der die Chart-Engine als HTTP-Service bereitstellt.
+Duenner FastAPI-Wrapper, der die Soraya Chart-Engine als HTTP-Service bereitstellt.
 
 Eingabe-Komfort: Statt lat/lng kann man einfach `birthplace` (Ortsname) angeben
 -- der wird per Geocoding aufgeloest. lat/lng gehen weiterhin direkt.
 
 Endpoints:
     GET  /          -> Health-Check
+    GET  /db/health -> Supabase-Verbindungstest
     GET  /demo      -> Beispiel-Ausgabe (im Browser aufrufbar, ohne POST)
     POST /chart     -> Geburtshoroskop
     POST /transits  -> Transite gegen das Chart
@@ -24,8 +25,9 @@ from analysis import generate_full_analysis
 from horoscope import generate_horoscope
 from chat import chat_turn, update_memory
 from geocode import geocode_place
+from supabase_client import db_health
 
-app = FastAPI(title="RGYM Astro Engine", version="1.4")
+app = FastAPI(title="Soraya Astro Engine", version="1.5")
 
 
 class PersonIn(BaseModel):
@@ -33,18 +35,17 @@ class PersonIn(BaseModel):
     year: int
     month: int
     day: int
-    hour: Optional[int] = None        # None = Geburtszeit unbekannt
+    hour: Optional[int] = None
     minute: Optional[int] = None
-    # Geburtsort: ENTWEDER birthplace (Ortsname) ODER lat/lng angeben.
-    birthplace: Optional[str] = None  # z.B. "Woergl, Oesterreich"
+    birthplace: Optional[str] = None
     lat: Optional[float] = None
     lng: Optional[float] = None
-    tz_str: Optional[str] = None      # optional; sonst aus lat/lng abgeleitet
+    tz_str: Optional[str] = None
 
 
 class TransitIn(BaseModel):
     person: PersonIn
-    at: Optional[str] = None          # ISO-Datum/Zeit; None = jetzt
+    at: Optional[str] = None
 
 
 class SynastryIn(BaseModel):
@@ -54,21 +55,21 @@ class SynastryIn(BaseModel):
 
 class HoroscopeIn(BaseModel):
     person: PersonIn
-    period: str = "daily"             # daily | weekly | monthly
-    at: Optional[str] = None          # ISO-Datum/Zeit; None = jetzt
+    period: str = "daily"
+    at: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
-    role: str                         # "user" | "assistant"
+    role: str
     content: str
 
 
 class ChatIn(BaseModel):
-    person: PersonIn                  # der Nutzer selbst
-    people: List[PersonIn] = []       # weitere Personen (Partner, Freunde) fuer Synastrie
-    messages: List[ChatMessage] = []  # bisherige Gespraechs-Historie
-    message: str                      # die neue Nutzer-Nachricht
-    memory: Optional[str] = None      # rollende Memory aus frueheren Gespraechen
+    person: PersonIn
+    people: List[PersonIn] = []
+    messages: List[ChatMessage] = []
+    message: str
+    memory: Optional[str] = None
 
 
 class MemoryIn(BaseModel):
@@ -77,8 +78,6 @@ class MemoryIn(BaseModel):
 
 
 def _resolve_person(p: PersonIn) -> dict:
-    """Fuellt lat/lng auf -- per Geocoding, falls nur birthplace angegeben ist.
-    Gibt Result {ok, data:person_dict} | {ok:false, error} zurueck."""
     d = p.model_dump()
     if d.get("lat") is None or d.get("lng") is None:
         place = d.get("birthplace")
@@ -95,7 +94,6 @@ def _resolve_person(p: PersonIn) -> dict:
 
 
 def _tag_place(result: dict, person: dict) -> dict:
-    """Haengt den aufgeloesten Ortsnamen zur Kontrolle an die Antwort-Meta."""
     if result.get("ok") and person.get("resolved_place"):
         result["data"]["meta"]["resolved_place"] = person["resolved_place"]
     return result
@@ -105,10 +103,15 @@ def _tag_place(result: dict, person: dict) -> dict:
 def health():
     return {
         "ok": True,
-        "service": "astro-engine",
+        "service": "soraya-astro-engine",
         "endpoints": ["/chart", "/transits", "/synastry", "/analysis",
-                      "/horoscope", "/chat", "/memory/update", "/demo"],
+                      "/horoscope", "/chat", "/memory/update", "/db/health", "/demo"],
     }
+
+
+@app.get("/db/health")
+def database_health():
+    return db_health()
 
 
 @app.post("/chart")
@@ -140,7 +143,6 @@ def synastry(s: SynastryIn):
 
 @app.post("/analysis")
 async def analysis(p: PersonIn):
-    """Komplette Tiefen-Analyse (Multi-Agent, Claude). Braucht ANTHROPIC_API_KEY."""
     r = _resolve_person(p)
     if not r["ok"]:
         return r
@@ -149,7 +151,6 @@ async def analysis(p: PersonIn):
 
 @app.post("/horoscope")
 async def horoscope(h: HoroscopeIn):
-    """Tages-/Wochen-/Monatshoroskop (Transit-Agent). period: daily|weekly|monthly."""
     r = _resolve_person(h.person)
     if not r["ok"]:
         return r
@@ -158,7 +159,6 @@ async def horoscope(h: HoroscopeIn):
 
 @app.post("/chat")
 async def chat(c: ChatIn):
-    """Live-Gespraech mit Tool-Nutzung (Transite, Synastrie) + Memory."""
     ru = _resolve_person(c.person)
     if not ru["ok"]:
         return ru
@@ -174,13 +174,11 @@ async def chat(c: ChatIn):
 
 @app.post("/memory/update")
 async def memory_update(m: MemoryIn):
-    """Erzeugt/aktualisiert die rollende Memory aus einem Gespraech."""
     return await update_memory([x.model_dump() for x in m.messages], m.memory)
 
 
 @app.get("/demo")
 def demo():
-    """Im Browser aufrufbar -- liefert sofort ein Beispiel ohne POST-Body."""
     pa = {"name": "Gyoergy", "year": 1985, "month": 7, "day": 12,
           "hour": 8, "minute": 30, "lat": 46.6713, "lng": 11.1597}
     pb = {"name": "Sarah", "year": 1990, "month": 3, "day": 22,
