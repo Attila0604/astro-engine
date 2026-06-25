@@ -14,7 +14,7 @@ Endpoints:
     POST /analysis  -> Komplette Tiefen-Analyse (Multi-Agent, Claude)
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -22,9 +22,10 @@ from pydantic import BaseModel
 import chart_engine as ce
 from analysis import generate_full_analysis
 from horoscope import generate_horoscope
+from chat import chat_turn, update_memory
 from geocode import geocode_place
 
-app = FastAPI(title="RGYM Astro Engine", version="1.3")
+app = FastAPI(title="RGYM Astro Engine", version="1.4")
 
 
 class PersonIn(BaseModel):
@@ -57,6 +58,24 @@ class HoroscopeIn(BaseModel):
     at: Optional[str] = None          # ISO-Datum/Zeit; None = jetzt
 
 
+class ChatMessage(BaseModel):
+    role: str                         # "user" | "assistant"
+    content: str
+
+
+class ChatIn(BaseModel):
+    person: PersonIn                  # der Nutzer selbst
+    people: List[PersonIn] = []       # weitere Personen (Partner, Freunde) fuer Synastrie
+    messages: List[ChatMessage] = []  # bisherige Gespraechs-Historie
+    message: str                      # die neue Nutzer-Nachricht
+    memory: Optional[str] = None      # rollende Memory aus frueheren Gespraechen
+
+
+class MemoryIn(BaseModel):
+    messages: List[ChatMessage] = []
+    memory: Optional[str] = None
+
+
 def _resolve_person(p: PersonIn) -> dict:
     """Fuellt lat/lng auf -- per Geocoding, falls nur birthplace angegeben ist.
     Gibt Result {ok, data:person_dict} | {ok:false, error} zurueck."""
@@ -87,7 +106,8 @@ def health():
     return {
         "ok": True,
         "service": "astro-engine",
-        "endpoints": ["/chart", "/transits", "/synastry", "/analysis", "/horoscope", "/demo"],
+        "endpoints": ["/chart", "/transits", "/synastry", "/analysis",
+                      "/horoscope", "/chat", "/memory/update", "/demo"],
     }
 
 
@@ -134,6 +154,28 @@ async def horoscope(h: HoroscopeIn):
     if not r["ok"]:
         return r
     return await generate_horoscope(r["data"], h.period, h.at)
+
+
+@app.post("/chat")
+async def chat(c: ChatIn):
+    """Live-Gespraech mit Tool-Nutzung (Transite, Synastrie) + Memory."""
+    ru = _resolve_person(c.person)
+    if not ru["ok"]:
+        return ru
+    people = []
+    for pp in c.people:
+        rp = _resolve_person(pp)
+        if not rp["ok"]:
+            return {"ok": False, "error": f"{pp.name}: {rp['error']}"}
+        people.append(rp["data"])
+    history = [m.model_dump() for m in c.messages]
+    return await chat_turn(ru["data"], people, history, c.message, c.memory)
+
+
+@app.post("/memory/update")
+async def memory_update(m: MemoryIn):
+    """Erzeugt/aktualisiert die rollende Memory aus einem Gespraech."""
+    return await update_memory([x.model_dump() for x in m.messages], m.memory)
 
 
 @app.get("/demo")
