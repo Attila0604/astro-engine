@@ -4,3 +4,4 @@ geopy==2.4.1
 anthropic
 fastapi
 uvicorn[standard]
+supabase>=2.0.0,<3.0.0
