@@ -21,9 +21,10 @@ from pydantic import BaseModel
 
 import chart_engine as ce
 from analysis import generate_full_analysis
+from horoscope import generate_horoscope
 from geocode import geocode_place
 
-app = FastAPI(title="RGYM Astro Engine", version="1.2")
+app = FastAPI(title="RGYM Astro Engine", version="1.3")
 
 
 class PersonIn(BaseModel):
@@ -48,6 +49,12 @@ class TransitIn(BaseModel):
 class SynastryIn(BaseModel):
     person_a: PersonIn
     person_b: PersonIn
+
+
+class HoroscopeIn(BaseModel):
+    person: PersonIn
+    period: str = "daily"             # daily | weekly | monthly
+    at: Optional[str] = None          # ISO-Datum/Zeit; None = jetzt
 
 
 def _resolve_person(p: PersonIn) -> dict:
@@ -80,7 +87,7 @@ def health():
     return {
         "ok": True,
         "service": "astro-engine",
-        "endpoints": ["/chart", "/transits", "/synastry", "/analysis", "/demo"],
+        "endpoints": ["/chart", "/transits", "/synastry", "/analysis", "/horoscope", "/demo"],
     }
 
 
@@ -118,6 +125,15 @@ async def analysis(p: PersonIn):
     if not r["ok"]:
         return r
     return _tag_place(await generate_full_analysis(r["data"]), r["data"])
+
+
+@app.post("/horoscope")
+async def horoscope(h: HoroscopeIn):
+    """Tages-/Wochen-/Monatshoroskop (Transit-Agent). period: daily|weekly|monthly."""
+    r = _resolve_person(h.person)
+    if not r["ok"]:
+        return r
+    return await generate_horoscope(r["data"], h.period, h.at)
 
 
 @app.get("/demo")
