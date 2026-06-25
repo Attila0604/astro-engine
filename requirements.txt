@@ -1,4 +1,5 @@
 kerykeion==5.12.9
 timezonefinder==8.2.4
+anthropic
 fastapi
 uvicorn[standard]
