@@ -2,17 +2,18 @@
 main.py
 Duenner FastAPI-Wrapper, der die Soraya Chart-Engine als HTTP-Service bereitstellt.
 
-Eingabe-Komfort: Statt lat/lng kann man einfach `birthplace` (Ortsname) angeben
--- der wird per Geocoding aufgeloest. lat/lng gehen weiterhin direkt.
-
 Endpoints:
-    GET  /          -> Health-Check
-    GET  /db/health -> Supabase-Verbindungstest
-    GET  /demo      -> Beispiel-Ausgabe (im Browser aufrufbar, ohne POST)
-    POST /chart     -> Geburtshoroskop
-    POST /transits  -> Transite gegen das Chart
-    POST /synastry  -> Beziehungs-Dynamik zweier Charts
-    POST /analysis  -> Komplette Tiefen-Analyse (Multi-Agent, Claude)
+    GET  /               -> Health-Check
+    GET  /db/health      -> Supabase-Verbindungstest
+    GET  /demo           -> Beispiel-Ausgabe
+    POST /chart          -> Geburtshoroskop
+    POST /people/create  -> Person + Natal-Chart in Supabase speichern
+    POST /transits       -> Transite gegen das Chart
+    POST /synastry       -> Beziehungs-Dynamik zweier Charts
+    POST /analysis       -> Komplette Tiefen-Analyse
+    POST /horoscope      -> Tages-/Wochen-/Monatshoroskop
+    POST /chat           -> Live-Chat
+    POST /memory/update  -> Memory aktualisieren
 """
 
 from typing import List, Optional
@@ -25,9 +26,9 @@ from analysis import generate_full_analysis
 from horoscope import generate_horoscope
 from chat import chat_turn, update_memory
 from geocode import geocode_place
-from supabase_client import db_health
+from supabase_client import db_health, create_person
 
-app = FastAPI(title="Soraya Astro Engine", version="1.5")
+app = FastAPI(title="Soraya Astro Engine", version="1.6")
 
 
 class PersonIn(BaseModel):
@@ -41,6 +42,13 @@ class PersonIn(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
     tz_str: Optional[str] = None
+
+
+class CreatePersonIn(BaseModel):
+    owner_id: str
+    person: PersonIn
+    is_self: bool = False
+    relation: Optional[str] = None
 
 
 class TransitIn(BaseModel):
@@ -78,6 +86,7 @@ class MemoryIn(BaseModel):
 
 
 def _resolve_person(p: PersonIn) -> dict:
+    """Fuellt lat/lng per Geocoding auf, falls nur birthplace angegeben ist."""
     d = p.model_dump()
     if d.get("lat") is None or d.get("lng") is None:
         place = d.get("birthplace")
@@ -104,7 +113,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "endpoints": ["/chart", "/transits", "/synastry", "/analysis",
+        "endpoints": ["/chart", "/people/create", "/transits", "/synastry", "/analysis",
                       "/horoscope", "/chat", "/memory/update", "/db/health", "/demo"],
     }
 
@@ -112,6 +121,42 @@ def health():
 @app.get("/db/health")
 def database_health():
     return db_health()
+
+
+@app.post("/people/create")
+def people_create(payload: CreatePersonIn):
+    """Speichert eine Person inklusive berechnetem Natal-Chart in Supabase.
+
+    Wichtig: owner_id muss die UUID eines existierenden Supabase-Auth-Nutzers sein.
+    Der zugehoerige Datensatz in public.profiles wird normalerweise automatisch
+    durch den SQL-Trigger erstellt, sobald der Nutzer angelegt wird.
+    """
+    r = _resolve_person(payload.person)
+    if not r["ok"]:
+        return r
+
+    natal = ce.compute_natal(r["data"])
+    if not natal["ok"]:
+        return natal
+
+    saved = create_person(
+        payload.owner_id,
+        r["data"],
+        chart_json=natal["data"],
+        is_self=payload.is_self,
+        relation=payload.relation,
+    )
+    if not saved["ok"]:
+        return saved
+
+    return {
+        "ok": True,
+        "data": {
+            "person": saved["data"],
+            "chart_meta": natal["data"]["meta"],
+            "big_three": natal["data"]["big_three"],
+        },
+    }
 
 
 @app.post("/chart")
