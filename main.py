@@ -14,8 +14,10 @@ from supabase_client import (
     create_person,
     get_person,
     person_row_to_engine_person,
+    get_latest_analysis,
     save_analysis,
     save_horoscope,
+    save_synastry,
     create_conversation,
     save_message,
     get_conversation_messages,
@@ -23,7 +25,7 @@ from supabase_client import (
     update_profile_memory,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.0")
+app = FastAPI(title="Soraya Astro Engine", version="2.1")
 
 
 class PersonIn(BaseModel):
@@ -49,6 +51,7 @@ class CreatePersonIn(BaseModel):
 class SaveAnalysisIn(BaseModel):
     owner_id: str
     person_id: str
+    force_new: bool = False
 
 
 class SaveHoroscopeIn(BaseModel):
@@ -56,6 +59,12 @@ class SaveHoroscopeIn(BaseModel):
     person_id: str
     period: str = "daily"
     at: Optional[str] = None
+
+
+class SaveSynastryIn(BaseModel):
+    owner_id: str
+    person_a_id: str
+    person_b_id: str
 
 
 class ChatSaveIn(BaseModel):
@@ -141,12 +150,13 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.0",
+        "version": "2.1",
         "security": "X-Soraya-API-Key required for write/AI endpoints",
         "endpoints": [
             "/chart", "/people/create", "/analysis/save", "/horoscope/save",
-            "/chat/save", "/transits", "/synastry", "/analysis", "/horoscope",
-            "/chat", "/memory/update", "/memory/save", "/db/health", "/demo",
+            "/synastry/save", "/chat/save", "/transits", "/synastry",
+            "/analysis", "/horoscope", "/chat", "/memory/update",
+            "/memory/save", "/db/health", "/demo",
         ],
     }
 
@@ -161,57 +171,45 @@ def people_create(payload: CreatePersonIn, _: bool = Depends(require_soraya_api_
     r = _resolve_person(payload.person)
     if not r["ok"]:
         return r
-
     natal = ce.compute_natal(r["data"])
     if not natal["ok"]:
         return natal
-
-    saved = create_person(
-        payload.owner_id,
-        r["data"],
-        chart_json=natal["data"],
-        is_self=payload.is_self,
-        relation=payload.relation,
-    )
+    saved = create_person(payload.owner_id, r["data"], chart_json=natal["data"],
+                          is_self=payload.is_self, relation=payload.relation)
     if not saved["ok"]:
         return saved
-
-    return {
-        "ok": True,
-        "data": {
-            "person": saved["data"],
-            "chart_meta": natal["data"]["meta"],
-            "big_three": natal["data"]["big_three"],
-        },
-    }
+    return {"ok": True, "data": {"person": saved["data"],
+                                 "chart_meta": natal["data"]["meta"],
+                                 "big_three": natal["data"]["big_three"]}}
 
 
 @app.post("/analysis/save")
 async def analysis_save(payload: SaveAnalysisIn, _: bool = Depends(require_soraya_api_key)):
+    if not payload.force_new:
+        existing = get_latest_analysis(payload.owner_id, payload.person_id)
+        if not existing["ok"]:
+            return existing
+        if existing["data"]:
+            return {"ok": True, "data": {"source": "cached",
+                                         "analysis": existing["data"],
+                                         "note": "Vorhandene Analyse wiederverwendet. Fuer neue Analyse force_new=true senden."}}
+
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
-
     person = person_row_to_engine_person(person_row["data"])
-
     reading = await generate_full_analysis(person)
     if not reading["ok"]:
         return reading
-
     saved = save_analysis(payload.owner_id, payload.person_id, reading)
     if not saved["ok"]:
         return saved
-
-    return {
-        "ok": True,
-        "data": {
-            "analysis": saved["data"],
-            "person": {"id": payload.person_id, "name": person.get("name")},
-            "big_three": reading["data"].get("big_three"),
-            "model": reading["data"].get("model"),
-            "reading": reading["data"].get("reading"),
-        },
-    }
+    return {"ok": True, "data": {"source": "created",
+                                 "analysis": saved["data"],
+                                 "person": {"id": payload.person_id, "name": person.get("name")},
+                                 "big_three": reading["data"].get("big_three"),
+                                 "model": reading["data"].get("model"),
+                                 "reading": reading["data"].get("reading")}}
 
 
 @app.post("/horoscope/save")
@@ -219,30 +217,47 @@ async def horoscope_save(payload: SaveHoroscopeIn, _: bool = Depends(require_sor
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
-
     person = person_row_to_engine_person(person_row["data"])
-
     horoscope_result = await generate_horoscope(person, payload.period, payload.at)
     if not horoscope_result["ok"]:
         return horoscope_result
-
     saved = save_horoscope(payload.owner_id, payload.person_id, horoscope_result)
     if not saved["ok"]:
         return saved
+    return {"ok": True, "data": {"horoscope": saved["data"],
+                                 "person": {"id": payload.person_id, "name": person.get("name")},
+                                 "period": horoscope_result["data"].get("period"),
+                                 "stimmung": horoscope_result["data"].get("stimmung"),
+                                 "text": horoscope_result["data"].get("text"),
+                                 "tipp": horoscope_result["data"].get("tipp"),
+                                 "model": horoscope_result["data"].get("model"),
+                                 "transits_used": horoscope_result["data"].get("transits_used")}}
 
-    return {
-        "ok": True,
-        "data": {
-            "horoscope": saved["data"],
-            "person": {"id": payload.person_id, "name": person.get("name")},
-            "period": horoscope_result["data"].get("period"),
-            "stimmung": horoscope_result["data"].get("stimmung"),
-            "text": horoscope_result["data"].get("text"),
-            "tipp": horoscope_result["data"].get("tipp"),
-            "model": horoscope_result["data"].get("model"),
-            "transits_used": horoscope_result["data"].get("transits_used"),
-        },
-    }
+
+@app.post("/synastry/save")
+def synastry_save(payload: SaveSynastryIn, _: bool = Depends(require_soraya_api_key)):
+    if payload.person_a_id == payload.person_b_id:
+        return {"ok": False, "error": "person_a_id und person_b_id muessen verschieden sein."}
+    row_a = get_person(payload.owner_id, payload.person_a_id)
+    if not row_a["ok"]:
+        return row_a
+    row_b = get_person(payload.owner_id, payload.person_b_id)
+    if not row_b["ok"]:
+        return row_b
+    person_a = person_row_to_engine_person(row_a["data"])
+    person_b = person_row_to_engine_person(row_b["data"])
+    syn = ce.compute_synastry(person_a, person_b)
+    if not syn["ok"]:
+        return syn
+    saved = save_synastry(payload.owner_id, payload.person_a_id, payload.person_b_id, syn)
+    if not saved["ok"]:
+        return saved
+    return {"ok": True, "data": {"synastry": saved["data"],
+                                 "person_a": {"id": payload.person_a_id, "name": person_a.get("name")},
+                                 "person_b": {"id": payload.person_b_id, "name": person_b.get("name")},
+                                 "score": syn["data"].get("score"),
+                                 "summary": syn["data"].get("summary"),
+                                 "aspects": syn["data"].get("aspects")}}
 
 
 @app.post("/chat/save")
@@ -250,16 +265,13 @@ async def chat_save(payload: ChatSaveIn, _: bool = Depends(require_soraya_api_ke
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
-
     user_person = person_row_to_engine_person(person_row["data"])
-
     people = []
     for pid in payload.people_ids:
         other_row = get_person(payload.owner_id, pid)
         if not other_row["ok"]:
             return {"ok": False, "error": f"Person {pid} konnte nicht geladen werden: {other_row.get('error')}"}
         people.append(person_row_to_engine_person(other_row["data"]))
-
     conversation_id = payload.conversation_id
     if not conversation_id:
         title = payload.message.strip()[:80] or "Neue Soraya-Unterhaltung"
@@ -267,61 +279,31 @@ async def chat_save(payload: ChatSaveIn, _: bool = Depends(require_soraya_api_ke
         if not conv["ok"]:
             return conv
         conversation_id = conv["data"]["id"]
-
     previous = get_conversation_messages(payload.owner_id, conversation_id, limit=50)
     if not previous["ok"]:
         return previous
-
     history = _rows_to_chat_history(previous["data"])
-
-    # Gespeicherte Langzeit-Erinnerung laden, falls der Aufrufer keine mitgibt
     memory = payload.memory
     if memory is None:
         mem_res = get_profile_memory(payload.owner_id)
         if mem_res["ok"]:
             memory = mem_res["data"]
-
-    reply_result = await chat_turn(
-        user_person,
-        people,
-        history,
-        payload.message,
-        memory,
-    )
+    reply_result = await chat_turn(user_person, people, history, payload.message, memory)
     if not reply_result["ok"]:
         return reply_result
-
-    user_saved = save_message(
-        payload.owner_id,
-        conversation_id,
-        "user",
-        payload.message,
-    )
+    user_saved = save_message(payload.owner_id, conversation_id, "user", payload.message)
     if not user_saved["ok"]:
         return user_saved
-
-    assistant_saved = save_message(
-        payload.owner_id,
-        conversation_id,
-        "assistant",
-        reply_result["data"]["reply"],
-        tools_used=reply_result["data"].get("tools_used"),
-    )
+    assistant_saved = save_message(payload.owner_id, conversation_id, "assistant",
+                                   reply_result["data"]["reply"],
+                                   tools_used=reply_result["data"].get("tools_used"))
     if not assistant_saved["ok"]:
         return assistant_saved
-
-    return {
-        "ok": True,
-        "data": {
-            "conversation_id": conversation_id,
-            "reply": reply_result["data"]["reply"],
-            "tools_used": reply_result["data"].get("tools_used"),
-            "saved": {
-                "user_message": user_saved["data"],
-                "assistant_message": assistant_saved["data"],
-            },
-        },
-    }
+    return {"ok": True, "data": {"conversation_id": conversation_id,
+                                 "reply": reply_result["data"]["reply"],
+                                 "tools_used": reply_result["data"].get("tools_used"),
+                                 "saved": {"user_message": user_saved["data"],
+                                           "assistant_message": assistant_saved["data"]}}}
 
 
 @app.post("/chart")
@@ -389,7 +371,6 @@ async def memory_update(m: MemoryIn, _: bool = Depends(require_soraya_api_key)):
 
 @app.post("/memory/save")
 async def memory_save(m: MemorySaveIn, _: bool = Depends(require_soraya_api_key)):
-    """Erzeugt die aktualisierte Memory und speichert sie am Profil des Nutzers."""
     gen = await update_memory([x.model_dump() for x in m.messages], m.memory)
     if not gen["ok"]:
         return gen
@@ -405,8 +386,6 @@ def demo():
           "hour": 8, "minute": 30, "lat": 46.6713, "lng": 11.1597}
     pb = {"name": "Sarah", "year": 1990, "month": 3, "day": 22,
           "hour": 19, "minute": 15, "lat": 47.4894, "lng": 12.0658}
-    return {
-        "natal": ce.compute_natal(pa),
-        "transits_today": ce.compute_transits(pa),
-        "synastry": ce.compute_synastry(pa, pb),
-    }
+    return {"natal": ce.compute_natal(pa),
+            "transits_today": ce.compute_transits(pa),
+            "synastry": ce.compute_synastry(pa, pb)}
