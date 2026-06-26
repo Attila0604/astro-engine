@@ -2,12 +2,10 @@
 supabase_client.py
 Supabase-Anbindung fuer Soraya.
 
-Diese Datei kapselt alle direkten Datenbank-Zugriffe. Sie ist bewusst schlank:
-- Supabase-Client wird lazy erstellt, damit die App auch ohne ENV beim Start nicht crasht.
-- Backend/Batch nutzt den SERVICE_ROLE_KEY und kann RLS umgehen.
-- Oeffentliche Endpunkte sollten spaeter trotzdem Auth/API-Key-Schutz bekommen.
+Diese Datei kapselt alle direkten Datenbank-Zugriffe.
+Der SERVICE_ROLE_KEY darf nur im Backend/Railway liegen, niemals im Frontend.
 
-Erforderliche ENV-Variablen im Backend/Railway:
+Erforderliche ENV-Variablen:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 """
@@ -32,15 +30,10 @@ def _err(msg: str) -> dict:
 
 
 def _response_data(resp) -> Any:
-    """supabase-py Response -> data. Exceptions werden vom Caller gefangen."""
     return getattr(resp, "data", None)
 
 
 def get_supabase() -> Client:
-    """Lazy Supabase-Service-Client.
-
-    Wichtig: Der SERVICE_ROLE_KEY darf nur im Backend liegen, niemals im Frontend.
-    """
     global _SUPABASE
     if _SUPABASE is None:
         url = os.environ.get("SUPABASE_URL")
@@ -54,7 +47,6 @@ def get_supabase() -> Client:
 
 
 def db_health() -> dict:
-    """Kleiner Verbindungstest fuer /db/health."""
     try:
         resp = get_supabase().table("profiles").select("id").limit(1).execute()
         return _ok({
@@ -84,9 +76,41 @@ def _target_date_from_iso(value: Optional[str]) -> str:
     return str(value)[:10]
 
 
+def _parse_birth_date(value: str) -> tuple[int, int, int]:
+    d = date.fromisoformat(str(value)[:10])
+    return d.year, d.month, d.day
+
+
+def _parse_birth_time(value: Optional[str], time_known: bool) -> tuple[Optional[int], Optional[int]]:
+    if not time_known or not value:
+        return None, None
+    parts = str(value).split(":")
+    return int(parts[0]), int(parts[1])
+
+
+def person_row_to_engine_person(row: dict) -> dict:
+    """Supabase public.people row -> Eingabeformat fuer chart_engine/analysis."""
+    year, month, day = _parse_birth_date(row["birth_date"])
+    hour, minute = _parse_birth_time(row.get("birth_time"), bool(row.get("time_known", True)))
+    return {
+        "name": row.get("name") or "Unbenannt",
+        "year": year,
+        "month": month,
+        "day": day,
+        "hour": hour,
+        "minute": minute,
+        "birthplace": row.get("birthplace"),
+        "lat": row.get("lat"),
+        "lng": row.get("lng"),
+        "tz_str": row.get("tz_str"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# people
+# ---------------------------------------------------------------------------
 def create_person(owner_id: str, person: dict, *, chart_json: Optional[dict] = None,
                   is_self: bool = False, relation: Optional[str] = None) -> dict:
-    """Legt eine Person / ein Chart-Subjekt in public.people an."""
     try:
         payload = {
             "owner_id": owner_id,
@@ -122,6 +146,27 @@ def get_people(owner_id: str) -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
+def get_person(owner_id: str, person_id: str) -> dict:
+    """Laedt genau eine Person aus Supabase."""
+    try:
+        resp = (get_supabase()
+                .table("people")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("id", person_id)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        if not rows:
+            return _err("Person nicht gefunden. Bitte owner_id und person_id pruefen.")
+        return _ok(rows[0])
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# analyses / horoscopes / synastries
+# ---------------------------------------------------------------------------
 def save_analysis(owner_id: str, person_id: str, analysis_result: dict) -> dict:
     try:
         data = analysis_result.get("data", analysis_result)
@@ -189,6 +234,9 @@ def save_synastry(owner_id: str, person_a_id: str, person_b_id: str,
         return _err(f"{type(e).__name__}: {e}")
 
 
+# ---------------------------------------------------------------------------
+# conversations / messages / memory
+# ---------------------------------------------------------------------------
 def create_conversation(owner_id: str, title: Optional[str] = None) -> dict:
     try:
         payload = {"owner_id": owner_id, "title": title or "Neue Soraya-Unterhaltung"}
