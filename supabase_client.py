@@ -290,3 +290,18 @@ def update_profile_memory(owner_id: str, memory: str) -> dict:
         return _ok(rows[0] if rows else None)
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
+
+
+def get_profile_memory(owner_id: str) -> dict:
+    """Liest die rollende Langzeit-Erinnerung eines Nutzers (oder None)."""
+    try:
+        resp = (get_supabase()
+                .table("profiles")
+                .select("memory")
+                .eq("id", owner_id)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0].get("memory") if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
