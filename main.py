@@ -1,7 +1,7 @@
 
 from typing import List, Optional
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 import chart_engine as ce
@@ -9,6 +9,7 @@ from analysis import generate_full_analysis
 from horoscope import generate_horoscope
 from chat import chat_turn, update_memory
 from geocode import geocode_place
+from auth_guard import require_soraya_api_key
 from supabase_client import (
     db_health,
     create_person,
@@ -21,7 +22,7 @@ from supabase_client import (
     get_conversation_messages,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="1.9")
+app = FastAPI(title="Soraya Astro Engine", version="2.0")
 
 
 class PersonIn(BaseModel):
@@ -121,7 +122,6 @@ def _tag_place(result: dict, person: dict) -> dict:
 
 
 def _rows_to_chat_history(rows: list) -> list:
-    """Supabase messages rows -> Chat-History fuer chat_turn()."""
     return [
         {"role": r.get("role"), "content": r.get("content") or ""}
         for r in rows
@@ -134,6 +134,8 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
+        "version": "2.0",
+        "security": "X-Soraya-API-Key required for write/AI endpoints",
         "endpoints": [
             "/chart", "/people/create", "/analysis/save", "/horoscope/save",
             "/chat/save", "/transits", "/synastry", "/analysis", "/horoscope",
@@ -148,7 +150,7 @@ def database_health():
 
 
 @app.post("/people/create")
-def people_create(payload: CreatePersonIn):
+def people_create(payload: CreatePersonIn, _: bool = Depends(require_soraya_api_key)):
     r = _resolve_person(payload.person)
     if not r["ok"]:
         return r
@@ -178,7 +180,7 @@ def people_create(payload: CreatePersonIn):
 
 
 @app.post("/analysis/save")
-async def analysis_save(payload: SaveAnalysisIn):
+async def analysis_save(payload: SaveAnalysisIn, _: bool = Depends(require_soraya_api_key)):
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
@@ -206,7 +208,7 @@ async def analysis_save(payload: SaveAnalysisIn):
 
 
 @app.post("/horoscope/save")
-async def horoscope_save(payload: SaveHoroscopeIn):
+async def horoscope_save(payload: SaveHoroscopeIn, _: bool = Depends(require_soraya_api_key)):
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
@@ -237,8 +239,7 @@ async def horoscope_save(payload: SaveHoroscopeIn):
 
 
 @app.post("/chat/save")
-async def chat_save(payload: ChatSaveIn):
-    """Fuehrt einen Soraya-Chat-Turn aus und speichert User- und Assistant-Nachricht."""
+async def chat_save(payload: ChatSaveIn, _: bool = Depends(require_soraya_api_key)):
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
@@ -337,7 +338,7 @@ def synastry(s: SynastryIn):
 
 
 @app.post("/analysis")
-async def analysis(p: PersonIn):
+async def analysis(p: PersonIn, _: bool = Depends(require_soraya_api_key)):
     r = _resolve_person(p)
     if not r["ok"]:
         return r
@@ -345,7 +346,7 @@ async def analysis(p: PersonIn):
 
 
 @app.post("/horoscope")
-async def horoscope(h: HoroscopeIn):
+async def horoscope(h: HoroscopeIn, _: bool = Depends(require_soraya_api_key)):
     r = _resolve_person(h.person)
     if not r["ok"]:
         return r
@@ -353,7 +354,7 @@ async def horoscope(h: HoroscopeIn):
 
 
 @app.post("/chat")
-async def chat(c: ChatIn):
+async def chat(c: ChatIn, _: bool = Depends(require_soraya_api_key)):
     ru = _resolve_person(c.person)
     if not ru["ok"]:
         return ru
@@ -368,7 +369,7 @@ async def chat(c: ChatIn):
 
 
 @app.post("/memory/update")
-async def memory_update(m: MemoryIn):
+async def memory_update(m: MemoryIn, _: bool = Depends(require_soraya_api_key)):
     return await update_memory([x.model_dump() for x in m.messages], m.memory)
 
 
