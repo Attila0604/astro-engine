@@ -1,22 +1,3 @@
-"""
-main.py
-Duenner FastAPI-Wrapper, der die Soraya Chart-Engine als HTTP-Service bereitstellt.
-
-Endpoints:
-    GET  /                -> Health-Check
-    GET  /db/health       -> Supabase-Verbindungstest
-    GET  /demo            -> Beispiel-Ausgabe
-    POST /chart           -> Geburtshoroskop
-    POST /people/create   -> Person + Natal-Chart speichern
-    POST /analysis/save   -> Tiefenanalyse erstellen + speichern
-    POST /transits        -> Transite gegen das Chart
-    POST /synastry        -> Beziehungs-Dynamik zweier Charts
-    POST /analysis        -> Komplette Tiefen-Analyse ohne Speichern
-    POST /horoscope       -> Tages-/Wochen-/Monatshoroskop
-    POST /chat            -> Live-Chat
-    POST /memory/update   -> Memory aktualisieren
-"""
-
 from typing import List, Optional
 
 from fastapi import FastAPI
@@ -33,9 +14,10 @@ from supabase_client import (
     get_person,
     person_row_to_engine_person,
     save_analysis,
+    save_horoscope,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="1.7")
+app = FastAPI(title="Soraya Astro Engine", version="1.8")
 
 
 class PersonIn(BaseModel):
@@ -61,6 +43,13 @@ class CreatePersonIn(BaseModel):
 class SaveAnalysisIn(BaseModel):
     owner_id: str
     person_id: str
+
+
+class SaveHoroscopeIn(BaseModel):
+    owner_id: str
+    person_id: str
+    period: str = "daily"       # daily | weekly | monthly
+    at: Optional[str] = None    # ISO-Datum/Zeit; None = jetzt
 
 
 class TransitIn(BaseModel):
@@ -98,13 +87,11 @@ class MemoryIn(BaseModel):
 
 
 def _resolve_person(p: PersonIn) -> dict:
-    """Fuellt lat/lng per Geocoding auf, falls nur birthplace angegeben ist."""
     d = p.model_dump()
     if d.get("lat") is None or d.get("lng") is None:
         place = d.get("birthplace")
         if not place:
-            return {"ok": False,
-                    "error": "Bitte birthplace (Geburtsort) ODER lat/lng angeben."}
+            return {"ok": False, "error": "Bitte birthplace (Geburtsort) ODER lat/lng angeben."}
         geo = geocode_place(place)
         if not geo["ok"]:
             return geo
@@ -125,9 +112,11 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "endpoints": ["/chart", "/people/create", "/analysis/save", "/transits",
-                      "/synastry", "/analysis", "/horoscope", "/chat",
-                      "/memory/update", "/db/health", "/demo"],
+        "endpoints": [
+            "/chart", "/people/create", "/analysis/save", "/horoscope/save",
+            "/transits", "/synastry", "/analysis", "/horoscope", "/chat",
+            "/memory/update", "/db/health", "/demo",
+        ],
     }
 
 
@@ -168,7 +157,6 @@ def people_create(payload: CreatePersonIn):
 
 @app.post("/analysis/save")
 async def analysis_save(payload: SaveAnalysisIn):
-    """Erstellt eine Soraya-Tiefenanalyse fuer eine gespeicherte Person und speichert sie."""
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
@@ -187,13 +175,41 @@ async def analysis_save(payload: SaveAnalysisIn):
         "ok": True,
         "data": {
             "analysis": saved["data"],
-            "person": {
-                "id": payload.person_id,
-                "name": person.get("name"),
-            },
+            "person": {"id": payload.person_id, "name": person.get("name")},
             "big_three": reading["data"].get("big_three"),
             "model": reading["data"].get("model"),
             "reading": reading["data"].get("reading"),
+        },
+    }
+
+
+@app.post("/horoscope/save")
+async def horoscope_save(payload: SaveHoroscopeIn):
+    person_row = get_person(payload.owner_id, payload.person_id)
+    if not person_row["ok"]:
+        return person_row
+
+    person = person_row_to_engine_person(person_row["data"])
+
+    horoscope_result = await generate_horoscope(person, payload.period, payload.at)
+    if not horoscope_result["ok"]:
+        return horoscope_result
+
+    saved = save_horoscope(payload.owner_id, payload.person_id, horoscope_result)
+    if not saved["ok"]:
+        return saved
+
+    return {
+        "ok": True,
+        "data": {
+            "horoscope": saved["data"],
+            "person": {"id": payload.person_id, "name": person.get("name")},
+            "period": horoscope_result["data"].get("period"),
+            "stimmung": horoscope_result["data"].get("stimmung"),
+            "text": horoscope_result["data"].get("text"),
+            "tipp": horoscope_result["data"].get("tipp"),
+            "model": horoscope_result["data"].get("model"),
+            "transits_used": horoscope_result["data"].get("transits_used"),
         },
     }
 
