@@ -16,6 +16,7 @@ Request Header:
 
 from __future__ import annotations
 
+import hmac
 import os
 
 from fastapi import Header, HTTPException
@@ -30,7 +31,8 @@ def require_soraya_api_key(x_soraya_api_key: str | None = Header(default=None)) 
             detail="SORAYA_API_KEY ist im Backend nicht gesetzt.",
         )
 
-    if not x_soraya_api_key or x_soraya_api_key != expected:
+    # timing-sicherer Vergleich (verhindert Timing-Angriffe auf den Key)
+    if not x_soraya_api_key or not hmac.compare_digest(x_soraya_api_key, expected):
         raise HTTPException(
             status_code=401,
             detail="Ungueltiger oder fehlender Soraya API Key.",
