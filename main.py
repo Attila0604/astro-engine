@@ -1,6 +1,7 @@
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import chart_engine as ce
@@ -26,7 +27,18 @@ from supabase_client import (
     update_profile_memory,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.2")
+app = FastAPI(title="Soraya Astro Engine", version="2.3")
+
+# Erlaubt Browser-Web-Apps, dein Railway-Backend aufzurufen.
+# Fuer den ersten Test ist "*" am einfachsten.
+# Spaeter setzen wir hier deine echte Domain ein.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class PersonIn(BaseModel):
@@ -188,8 +200,8 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.2",
-        "security": "mobile endpoints use Authorization Bearer Supabase token",
+        "version": "2.3",
+        "security": "mobile endpoints use Authorization Bearer Supabase token; CORS enabled for web app",
         "endpoints": [
             "/auth/me",
             "/mobile/people/create",
