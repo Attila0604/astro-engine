@@ -1,4 +1,3 @@
-
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI
@@ -20,6 +19,8 @@ from supabase_client import (
     create_conversation,
     save_message,
     get_conversation_messages,
+    get_profile_memory,
+    update_profile_memory,
 )
 
 app = FastAPI(title="Soraya Astro Engine", version="2.0")
@@ -100,6 +101,12 @@ class MemoryIn(BaseModel):
     memory: Optional[str] = None
 
 
+class MemorySaveIn(BaseModel):
+    owner_id: str
+    messages: List[ChatMessage] = []
+    memory: Optional[str] = None
+
+
 def _resolve_person(p: PersonIn) -> dict:
     d = p.model_dump()
     if d.get("lat") is None or d.get("lng") is None:
@@ -139,7 +146,7 @@ def health():
         "endpoints": [
             "/chart", "/people/create", "/analysis/save", "/horoscope/save",
             "/chat/save", "/transits", "/synastry", "/analysis", "/horoscope",
-            "/chat", "/memory/update", "/db/health", "/demo",
+            "/chat", "/memory/update", "/memory/save", "/db/health", "/demo",
         ],
     }
 
@@ -267,12 +274,19 @@ async def chat_save(payload: ChatSaveIn, _: bool = Depends(require_soraya_api_ke
 
     history = _rows_to_chat_history(previous["data"])
 
+    # Gespeicherte Langzeit-Erinnerung laden, falls der Aufrufer keine mitgibt
+    memory = payload.memory
+    if memory is None:
+        mem_res = get_profile_memory(payload.owner_id)
+        if mem_res["ok"]:
+            memory = mem_res["data"]
+
     reply_result = await chat_turn(
         user_person,
         people,
         history,
         payload.message,
-        payload.memory,
+        memory,
     )
     if not reply_result["ok"]:
         return reply_result
@@ -371,6 +385,18 @@ async def chat(c: ChatIn, _: bool = Depends(require_soraya_api_key)):
 @app.post("/memory/update")
 async def memory_update(m: MemoryIn, _: bool = Depends(require_soraya_api_key)):
     return await update_memory([x.model_dump() for x in m.messages], m.memory)
+
+
+@app.post("/memory/save")
+async def memory_save(m: MemorySaveIn, _: bool = Depends(require_soraya_api_key)):
+    """Erzeugt die aktualisierte Memory und speichert sie am Profil des Nutzers."""
+    gen = await update_memory([x.model_dump() for x in m.messages], m.memory)
+    if not gen["ok"]:
+        return gen
+    saved = update_profile_memory(m.owner_id, gen["data"]["memory"])
+    if not saved["ok"]:
+        return saved
+    return {"ok": True, "data": {"memory": gen["data"]["memory"], "profile": saved["data"]}}
 
 
 @app.get("/demo")
