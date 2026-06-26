@@ -9,6 +9,7 @@ from horoscope import generate_horoscope
 from chat import chat_turn, update_memory
 from geocode import geocode_place
 from auth_guard import require_soraya_api_key
+from auth_user import get_current_supabase_user
 from supabase_client import (
     db_health,
     create_person,
@@ -25,7 +26,7 @@ from supabase_client import (
     update_profile_memory,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.1")
+app = FastAPI(title="Soraya Astro Engine", version="2.2")
 
 
 class PersonIn(BaseModel):
@@ -76,6 +77,38 @@ class ChatSaveIn(BaseModel):
     people_ids: List[str] = []
 
 
+# Mobile-sichere Payloads: KEINE owner_id im Body.
+# Das Backend nimmt owner_id automatisch aus dem Supabase Access Token.
+class MobileCreatePersonIn(BaseModel):
+    person: PersonIn
+    is_self: bool = False
+    relation: Optional[str] = None
+
+
+class MobileSaveAnalysisIn(BaseModel):
+    person_id: str
+    force_new: bool = False
+
+
+class MobileSaveHoroscopeIn(BaseModel):
+    person_id: str
+    period: str = "daily"
+    at: Optional[str] = None
+
+
+class MobileSaveSynastryIn(BaseModel):
+    person_a_id: str
+    person_b_id: str
+
+
+class MobileChatSaveIn(BaseModel):
+    person_id: str
+    message: str
+    conversation_id: Optional[str] = None
+    memory: Optional[str] = None
+    people_ids: List[str] = []
+
+
 class TransitIn(BaseModel):
     person: PersonIn
     at: Optional[str] = None
@@ -116,6 +149,11 @@ class MemorySaveIn(BaseModel):
     memory: Optional[str] = None
 
 
+class MobileMemorySaveIn(BaseModel):
+    messages: List[ChatMessage] = []
+    memory: Optional[str] = None
+
+
 def _resolve_person(p: PersonIn) -> dict:
     d = p.model_dump()
     if d.get("lat") is None or d.get("lng") is None:
@@ -150,9 +188,16 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.1",
-        "security": "X-Soraya-API-Key required for write/AI endpoints",
+        "version": "2.2",
+        "security": "mobile endpoints use Authorization Bearer Supabase token",
         "endpoints": [
+            "/auth/me",
+            "/mobile/people/create",
+            "/mobile/analysis/save",
+            "/mobile/horoscope/save",
+            "/mobile/synastry/save",
+            "/mobile/chat/save",
+            "/mobile/memory/save",
             "/chart", "/people/create", "/analysis/save", "/horoscope/save",
             "/synastry/save", "/chat/save", "/transits", "/synastry",
             "/analysis", "/horoscope", "/chat", "/memory/update",
@@ -166,6 +211,88 @@ def database_health():
     return db_health()
 
 
+# ---------------------------------------------------------------------------
+# Mobile-sichere Endpoints: Authorization: Bearer <Supabase Access Token>
+# ---------------------------------------------------------------------------
+@app.get("/auth/me")
+async def auth_me(user: dict = Depends(get_current_supabase_user)):
+    return {
+        "ok": True,
+        "data": {
+            "id": user.get("id"),
+            "email": user.get("email"),
+            "aud": user.get("aud"),
+            "role": user.get("role"),
+        },
+    }
+
+
+@app.post("/mobile/people/create")
+def mobile_people_create(payload: MobileCreatePersonIn, user: dict = Depends(get_current_supabase_user)):
+    return people_create(
+        CreatePersonIn(
+            owner_id=user["id"],
+            person=payload.person,
+            is_self=payload.is_self,
+            relation=payload.relation,
+        ),
+        True,
+    )
+
+
+@app.post("/mobile/analysis/save")
+async def mobile_analysis_save(payload: MobileSaveAnalysisIn, user: dict = Depends(get_current_supabase_user)):
+    return await analysis_save(
+        SaveAnalysisIn(owner_id=user["id"], person_id=payload.person_id, force_new=payload.force_new),
+        True,
+    )
+
+
+@app.post("/mobile/horoscope/save")
+async def mobile_horoscope_save(payload: MobileSaveHoroscopeIn, user: dict = Depends(get_current_supabase_user)):
+    return await horoscope_save(
+        SaveHoroscopeIn(owner_id=user["id"], person_id=payload.person_id, period=payload.period, at=payload.at),
+        True,
+    )
+
+
+@app.post("/mobile/synastry/save")
+def mobile_synastry_save(payload: MobileSaveSynastryIn, user: dict = Depends(get_current_supabase_user)):
+    return synastry_save(
+        SaveSynastryIn(owner_id=user["id"], person_a_id=payload.person_a_id, person_b_id=payload.person_b_id),
+        True,
+    )
+
+
+@app.post("/mobile/chat/save")
+async def mobile_chat_save(payload: MobileChatSaveIn, user: dict = Depends(get_current_supabase_user)):
+    return await chat_save(
+        ChatSaveIn(
+            owner_id=user["id"],
+            person_id=payload.person_id,
+            message=payload.message,
+            conversation_id=payload.conversation_id,
+            memory=payload.memory,
+            people_ids=payload.people_ids,
+        ),
+        True,
+    )
+
+
+@app.post("/mobile/memory/save")
+async def mobile_memory_save(m: MobileMemorySaveIn, user: dict = Depends(get_current_supabase_user)):
+    gen = await update_memory([x.model_dump() for x in m.messages], m.memory)
+    if not gen["ok"]:
+        return gen
+    saved = update_profile_memory(user["id"], gen["data"]["memory"])
+    if not saved["ok"]:
+        return saved
+    return {"ok": True, "data": {"memory": gen["data"]["memory"], "profile": saved["data"]}}
+
+
+# ---------------------------------------------------------------------------
+# Alte/testbare API-Key Endpoints bleiben erhalten
+# ---------------------------------------------------------------------------
 @app.post("/people/create")
 def people_create(payload: CreatePersonIn, _: bool = Depends(require_soraya_api_key)):
     r = _resolve_person(payload.person)
