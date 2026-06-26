@@ -1,3 +1,4 @@
+
 from typing import List, Optional
 
 from fastapi import FastAPI
@@ -15,9 +16,12 @@ from supabase_client import (
     person_row_to_engine_person,
     save_analysis,
     save_horoscope,
+    create_conversation,
+    save_message,
+    get_conversation_messages,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="1.8")
+app = FastAPI(title="Soraya Astro Engine", version="1.9")
 
 
 class PersonIn(BaseModel):
@@ -48,8 +52,17 @@ class SaveAnalysisIn(BaseModel):
 class SaveHoroscopeIn(BaseModel):
     owner_id: str
     person_id: str
-    period: str = "daily"       # daily | weekly | monthly
-    at: Optional[str] = None    # ISO-Datum/Zeit; None = jetzt
+    period: str = "daily"
+    at: Optional[str] = None
+
+
+class ChatSaveIn(BaseModel):
+    owner_id: str
+    person_id: str
+    message: str
+    conversation_id: Optional[str] = None
+    memory: Optional[str] = None
+    people_ids: List[str] = []
 
 
 class TransitIn(BaseModel):
@@ -107,6 +120,15 @@ def _tag_place(result: dict, person: dict) -> dict:
     return result
 
 
+def _rows_to_chat_history(rows: list) -> list:
+    """Supabase messages rows -> Chat-History fuer chat_turn()."""
+    return [
+        {"role": r.get("role"), "content": r.get("content") or ""}
+        for r in rows
+        if r.get("role") in ("user", "assistant") and r.get("content")
+    ]
+
+
 @app.get("/")
 def health():
     return {
@@ -114,8 +136,8 @@ def health():
         "service": "soraya-astro-engine",
         "endpoints": [
             "/chart", "/people/create", "/analysis/save", "/horoscope/save",
-            "/transits", "/synastry", "/analysis", "/horoscope", "/chat",
-            "/memory/update", "/db/health", "/demo",
+            "/chat/save", "/transits", "/synastry", "/analysis", "/horoscope",
+            "/chat", "/memory/update", "/db/health", "/demo",
         ],
     }
 
@@ -210,6 +232,79 @@ async def horoscope_save(payload: SaveHoroscopeIn):
             "tipp": horoscope_result["data"].get("tipp"),
             "model": horoscope_result["data"].get("model"),
             "transits_used": horoscope_result["data"].get("transits_used"),
+        },
+    }
+
+
+@app.post("/chat/save")
+async def chat_save(payload: ChatSaveIn):
+    """Fuehrt einen Soraya-Chat-Turn aus und speichert User- und Assistant-Nachricht."""
+    person_row = get_person(payload.owner_id, payload.person_id)
+    if not person_row["ok"]:
+        return person_row
+
+    user_person = person_row_to_engine_person(person_row["data"])
+
+    people = []
+    for pid in payload.people_ids:
+        other_row = get_person(payload.owner_id, pid)
+        if not other_row["ok"]:
+            return {"ok": False, "error": f"Person {pid} konnte nicht geladen werden: {other_row.get('error')}"}
+        people.append(person_row_to_engine_person(other_row["data"]))
+
+    conversation_id = payload.conversation_id
+    if not conversation_id:
+        title = payload.message.strip()[:80] or "Neue Soraya-Unterhaltung"
+        conv = create_conversation(payload.owner_id, title=title)
+        if not conv["ok"]:
+            return conv
+        conversation_id = conv["data"]["id"]
+
+    previous = get_conversation_messages(payload.owner_id, conversation_id, limit=50)
+    if not previous["ok"]:
+        return previous
+
+    history = _rows_to_chat_history(previous["data"])
+
+    reply_result = await chat_turn(
+        user_person,
+        people,
+        history,
+        payload.message,
+        payload.memory,
+    )
+    if not reply_result["ok"]:
+        return reply_result
+
+    user_saved = save_message(
+        payload.owner_id,
+        conversation_id,
+        "user",
+        payload.message,
+    )
+    if not user_saved["ok"]:
+        return user_saved
+
+    assistant_saved = save_message(
+        payload.owner_id,
+        conversation_id,
+        "assistant",
+        reply_result["data"]["reply"],
+        tools_used=reply_result["data"].get("tools_used"),
+    )
+    if not assistant_saved["ok"]:
+        return assistant_saved
+
+    return {
+        "ok": True,
+        "data": {
+            "conversation_id": conversation_id,
+            "reply": reply_result["data"]["reply"],
+            "tools_used": reply_result["data"].get("tools_used"),
+            "saved": {
+                "user_message": user_saved["data"],
+                "assistant_message": assistant_saved["data"],
+            },
         },
     }
 
