@@ -3,17 +3,18 @@ main.py
 Duenner FastAPI-Wrapper, der die Soraya Chart-Engine als HTTP-Service bereitstellt.
 
 Endpoints:
-    GET  /               -> Health-Check
-    GET  /db/health      -> Supabase-Verbindungstest
-    GET  /demo           -> Beispiel-Ausgabe
-    POST /chart          -> Geburtshoroskop
-    POST /people/create  -> Person + Natal-Chart in Supabase speichern
-    POST /transits       -> Transite gegen das Chart
-    POST /synastry       -> Beziehungs-Dynamik zweier Charts
-    POST /analysis       -> Komplette Tiefen-Analyse
-    POST /horoscope      -> Tages-/Wochen-/Monatshoroskop
-    POST /chat           -> Live-Chat
-    POST /memory/update  -> Memory aktualisieren
+    GET  /                -> Health-Check
+    GET  /db/health       -> Supabase-Verbindungstest
+    GET  /demo            -> Beispiel-Ausgabe
+    POST /chart           -> Geburtshoroskop
+    POST /people/create   -> Person + Natal-Chart speichern
+    POST /analysis/save   -> Tiefenanalyse erstellen + speichern
+    POST /transits        -> Transite gegen das Chart
+    POST /synastry        -> Beziehungs-Dynamik zweier Charts
+    POST /analysis        -> Komplette Tiefen-Analyse ohne Speichern
+    POST /horoscope       -> Tages-/Wochen-/Monatshoroskop
+    POST /chat            -> Live-Chat
+    POST /memory/update   -> Memory aktualisieren
 """
 
 from typing import List, Optional
@@ -26,9 +27,15 @@ from analysis import generate_full_analysis
 from horoscope import generate_horoscope
 from chat import chat_turn, update_memory
 from geocode import geocode_place
-from supabase_client import db_health, create_person
+from supabase_client import (
+    db_health,
+    create_person,
+    get_person,
+    person_row_to_engine_person,
+    save_analysis,
+)
 
-app = FastAPI(title="Soraya Astro Engine", version="1.6")
+app = FastAPI(title="Soraya Astro Engine", version="1.7")
 
 
 class PersonIn(BaseModel):
@@ -49,6 +56,11 @@ class CreatePersonIn(BaseModel):
     person: PersonIn
     is_self: bool = False
     relation: Optional[str] = None
+
+
+class SaveAnalysisIn(BaseModel):
+    owner_id: str
+    person_id: str
 
 
 class TransitIn(BaseModel):
@@ -113,8 +125,9 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "endpoints": ["/chart", "/people/create", "/transits", "/synastry", "/analysis",
-                      "/horoscope", "/chat", "/memory/update", "/db/health", "/demo"],
+        "endpoints": ["/chart", "/people/create", "/analysis/save", "/transits",
+                      "/synastry", "/analysis", "/horoscope", "/chat",
+                      "/memory/update", "/db/health", "/demo"],
     }
 
 
@@ -125,12 +138,6 @@ def database_health():
 
 @app.post("/people/create")
 def people_create(payload: CreatePersonIn):
-    """Speichert eine Person inklusive berechnetem Natal-Chart in Supabase.
-
-    Wichtig: owner_id muss die UUID eines existierenden Supabase-Auth-Nutzers sein.
-    Der zugehoerige Datensatz in public.profiles wird normalerweise automatisch
-    durch den SQL-Trigger erstellt, sobald der Nutzer angelegt wird.
-    """
     r = _resolve_person(payload.person)
     if not r["ok"]:
         return r
@@ -155,6 +162,38 @@ def people_create(payload: CreatePersonIn):
             "person": saved["data"],
             "chart_meta": natal["data"]["meta"],
             "big_three": natal["data"]["big_three"],
+        },
+    }
+
+
+@app.post("/analysis/save")
+async def analysis_save(payload: SaveAnalysisIn):
+    """Erstellt eine Soraya-Tiefenanalyse fuer eine gespeicherte Person und speichert sie."""
+    person_row = get_person(payload.owner_id, payload.person_id)
+    if not person_row["ok"]:
+        return person_row
+
+    person = person_row_to_engine_person(person_row["data"])
+
+    reading = await generate_full_analysis(person)
+    if not reading["ok"]:
+        return reading
+
+    saved = save_analysis(payload.owner_id, payload.person_id, reading)
+    if not saved["ok"]:
+        return saved
+
+    return {
+        "ok": True,
+        "data": {
+            "analysis": saved["data"],
+            "person": {
+                "id": payload.person_id,
+                "name": person.get("name"),
+            },
+            "big_three": reading["data"].get("big_three"),
+            "model": reading["data"].get("model"),
+            "reading": reading["data"].get("reading"),
         },
     }
 
