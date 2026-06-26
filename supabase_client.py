@@ -1,13 +1,6 @@
 """
 supabase_client.py
 Supabase-Anbindung fuer Soraya.
-
-Diese Datei kapselt alle direkten Datenbank-Zugriffe.
-Der SERVICE_ROLE_KEY darf nur im Backend/Railway liegen, niemals im Frontend.
-
-Erforderliche ENV-Variablen:
-    SUPABASE_URL
-    SUPABASE_SERVICE_ROLE_KEY
 """
 
 from __future__ import annotations
@@ -89,7 +82,6 @@ def _parse_birth_time(value: Optional[str], time_known: bool) -> tuple[Optional[
 
 
 def person_row_to_engine_person(row: dict) -> dict:
-    """Supabase public.people row -> Eingabeformat fuer chart_engine/analysis."""
     year, month, day = _parse_birth_date(row["birth_date"])
     hour, minute = _parse_birth_time(row.get("birth_time"), bool(row.get("time_known", True)))
     return {
@@ -106,9 +98,6 @@ def person_row_to_engine_person(row: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# people
-# ---------------------------------------------------------------------------
 def create_person(owner_id: str, person: dict, *, chart_json: Optional[dict] = None,
                   is_self: bool = False, relation: Optional[str] = None) -> dict:
     try:
@@ -147,7 +136,6 @@ def get_people(owner_id: str) -> dict:
 
 
 def get_person(owner_id: str, person_id: str) -> dict:
-    """Laedt genau eine Person aus Supabase."""
     try:
         resp = (get_supabase()
                 .table("people")
@@ -164,9 +152,23 @@ def get_person(owner_id: str, person_id: str) -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
-# ---------------------------------------------------------------------------
-# analyses / horoscopes / synastries
-# ---------------------------------------------------------------------------
+def get_latest_analysis(owner_id: str, person_id: str) -> dict:
+    """Liest die neueste gespeicherte Analyse, damit Claude-Kosten nicht doppelt entstehen."""
+    try:
+        resp = (get_supabase()
+                .table("analyses")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("person_id", person_id)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
 def save_analysis(owner_id: str, person_id: str, analysis_result: dict) -> dict:
     try:
         data = analysis_result.get("data", analysis_result)
@@ -234,9 +236,6 @@ def save_synastry(owner_id: str, person_a_id: str, person_b_id: str,
         return _err(f"{type(e).__name__}: {e}")
 
 
-# ---------------------------------------------------------------------------
-# conversations / messages / memory
-# ---------------------------------------------------------------------------
 def create_conversation(owner_id: str, title: Optional[str] = None) -> dict:
     try:
         payload = {"owner_id": owner_id, "title": title or "Neue Soraya-Unterhaltung"}
@@ -293,7 +292,6 @@ def update_profile_memory(owner_id: str, memory: str) -> dict:
 
 
 def get_profile_memory(owner_id: str) -> dict:
-    """Liest die rollende Langzeit-Erinnerung eines Nutzers (oder None)."""
     try:
         resp = (get_supabase()
                 .table("profiles")
