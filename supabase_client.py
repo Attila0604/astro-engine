@@ -115,6 +115,31 @@ def create_person(owner_id: str, person: dict, *, chart_json: Optional[dict] = N
             "tz_str": person.get("tz_str"),
             "chart_json": chart_json,
         }
+
+        # Stabilitaet: Das eigene Profil soll nicht bei jedem Speichern dupliziert werden.
+        # Wenn fuer den eingeloggten User bereits ein Self-Profil existiert, wird das neueste aktualisiert.
+        if is_self:
+            existing_resp = (get_supabase()
+                             .table("people")
+                             .select("id,created_at")
+                             .eq("owner_id", owner_id)
+                             .eq("is_self", True)
+                             .order("created_at", desc=True)
+                             .limit(1)
+                             .execute())
+            existing_rows = _response_data(existing_resp) or []
+            if existing_rows:
+                person_id = existing_rows[0]["id"]
+                update_payload = {k: v for k, v in payload.items() if k != "owner_id"}
+                resp = (get_supabase()
+                        .table("people")
+                        .update(update_payload)
+                        .eq("owner_id", owner_id)
+                        .eq("id", person_id)
+                        .execute())
+                rows = _response_data(resp) or []
+                return _ok(rows[0] if rows else {**payload, "id": person_id})
+
         resp = get_supabase().table("people").insert(payload).execute()
         rows = _response_data(resp) or []
         return _ok(rows[0] if rows else None)
@@ -259,47 +284,5 @@ def save_message(owner_id: str, conversation_id: str, role: str, content: str,
         resp = get_supabase().table("messages").insert(payload).execute()
         rows = _response_data(resp) or []
         return _ok(rows[0] if rows else None)
-    except Exception as e:
-        return _err(f"{type(e).__name__}: {e}")
-
-
-def get_conversation_messages(owner_id: str, conversation_id: str, limit: int = 50) -> dict:
-    try:
-        resp = (get_supabase()
-                .table("messages")
-                .select("role,content,tools_used,created_at")
-                .eq("owner_id", owner_id)
-                .eq("conversation_id", conversation_id)
-                .order("created_at", desc=False)
-                .limit(limit)
-                .execute())
-        return _ok(_response_data(resp) or [])
-    except Exception as e:
-        return _err(f"{type(e).__name__}: {e}")
-
-
-def update_profile_memory(owner_id: str, memory: str) -> dict:
-    try:
-        resp = (get_supabase()
-                .table("profiles")
-                .update({"memory": memory})
-                .eq("id", owner_id)
-                .execute())
-        rows = _response_data(resp) or []
-        return _ok(rows[0] if rows else None)
-    except Exception as e:
-        return _err(f"{type(e).__name__}: {e}")
-
-
-def get_profile_memory(owner_id: str) -> dict:
-    try:
-        resp = (get_supabase()
-                .table("profiles")
-                .select("memory")
-                .eq("id", owner_id)
-                .limit(1)
-                .execute())
-        rows = _response_data(resp) or []
-        return _ok(rows[0].get("memory") if rows else None)
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
