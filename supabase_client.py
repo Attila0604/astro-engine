@@ -286,3 +286,58 @@ def save_message(owner_id: str, conversation_id: str, role: str, content: str,
         return _ok(rows[0] if rows else None)
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
+
+
+def get_conversation_messages(owner_id: str, conversation_id: str, *, limit: int = 50) -> dict:
+    """Laedt die letzten Chat-Nachrichten fuer eine Unterhaltung."""
+    try:
+        safe_limit = max(1, min(int(limit or 50), 100))
+        resp = (get_supabase()
+                .table("messages")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("conversation_id", conversation_id)
+                .order("created_at", desc=True)
+                .limit(safe_limit)
+                .execute())
+        rows = list(_response_data(resp) or [])
+        rows.reverse()
+        return _ok(rows)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def get_profile_memory(owner_id: str) -> dict:
+    """Laedt Soraya-Memory fuer den eingeloggten User. Fällt weich auf None zurück."""
+    try:
+        resp = (get_supabase()
+                .table("profiles")
+                .select("memory")
+                .eq("id", owner_id)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        if not rows:
+            return _ok(None)
+        return _ok(rows[0].get("memory"))
+    except Exception:
+        # Memory darf den Chat nicht crashen, falls die Spalte/Tabelle noch nicht perfekt ist.
+        return _ok(None)
+
+
+def update_profile_memory(owner_id: str, memory: Any) -> dict:
+    """Speichert Soraya-Memory. Wenn die Tabelle/Spalte fehlt, bleibt die App trotzdem stabil."""
+    try:
+        payload = {
+            "id": owner_id,
+            "memory": memory,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        resp = (get_supabase()
+                .table("profiles")
+                .upsert(payload, on_conflict="id")
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else payload)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
