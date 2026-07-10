@@ -26,6 +26,7 @@ from supabase_client import (
     get_conversation_messages,
     get_profile_memory,
     update_profile_memory,
+    delete_account,
 )
 
 app = FastAPI(title="Soraya Astro Engine", version="2.4")
@@ -283,6 +284,20 @@ async def auth_me(user: dict = Depends(get_current_supabase_user)):
             "role": user.get("role"),
         },
     }
+
+
+@app.post("/mobile/account/delete")
+async def mobile_account_delete(user: dict = Depends(get_current_supabase_user)):
+    """
+    Loescht das Konto des eingeloggten Users unwiderruflich.
+
+    Sicherheit:
+    - owner_id kommt AUSSCHLIESSLICH aus dem verifizierten Supabase-Token,
+      niemals aus dem Request-Body. Ein User kann damit nur sich selbst loeschen.
+    - Loescht alle User-Daten und den Auth-Account (Store-Pflicht:
+      Apple App Store + Google Play verlangen In-App-Kontoloeschung).
+    """
+    return delete_account(user["id"])
 
 
 @app.post("/mobile/people/create")
