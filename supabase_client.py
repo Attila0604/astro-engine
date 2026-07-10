@@ -341,3 +341,53 @@ def update_profile_memory(owner_id: str, memory: Any) -> dict:
         return _ok(rows[0] if rows else payload)
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
+
+
+def delete_account(owner_id: str) -> dict:
+    """
+    Loescht ALLE Daten eines Users und danach den Auth-Account selbst.
+
+    Reihenfolge ist FK-sicher: zuerst abhaengige Tabellen (messages, synastries,
+    horoscopes, analyses), dann conversations und people, dann profiles,
+    zuletzt der Supabase-Auth-User via Admin-API (benoetigt service_role).
+
+    Rueckgabe enthaelt, was geloescht wurde, damit der Client es bestaetigen kann.
+    """
+    try:
+        sb = get_supabase()
+        deleted: dict[str, str] = {}
+
+        # 1) Tabellen, die auf people/conversations verweisen
+        for table in ("messages", "synastries", "horoscopes", "analyses"):
+            try:
+                sb.table(table).delete().eq("owner_id", owner_id).execute()
+                deleted[table] = "ok"
+            except Exception as e:
+                deleted[table] = f"{type(e).__name__}: {e}"
+
+        # 2) conversations und people
+        for table in ("conversations", "people"):
+            try:
+                sb.table(table).delete().eq("owner_id", owner_id).execute()
+                deleted[table] = "ok"
+            except Exception as e:
+                deleted[table] = f"{type(e).__name__}: {e}"
+
+        # 3) profiles (Primaerschluessel = id = owner_id)
+        try:
+            sb.table("profiles").delete().eq("id", owner_id).execute()
+            deleted["profiles"] = "ok"
+        except Exception as e:
+            deleted["profiles"] = f"{type(e).__name__}: {e}"
+
+        # 4) Auth-Account (unwiderruflich, braucht service_role)
+        try:
+            sb.auth.admin.delete_user(owner_id)
+            deleted["auth_user"] = "ok"
+        except Exception as e:
+            # Daten sind bereits weg; Auth-Loeschung meldet den Fehler transparent.
+            return _err(f"Daten geloescht, aber Auth-Account nicht: {type(e).__name__}: {e}")
+
+        return _ok({"deleted": deleted})
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
