@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 import chart_engine as ce
 from analysis import generate_full_analysis
 from horoscope import generate_horoscope
+from synastry_reading import generate_synastry_reading
 from chat import chat_turn, update_memory
 from geocode import geocode_place
 from auth_guard import require_soraya_api_key
@@ -367,11 +368,11 @@ async def mobile_horoscope_save(
 
 
 @app.post("/mobile/synastry/save")
-def mobile_synastry_save(
+async def mobile_synastry_save(
     payload: MobileSaveSynastryIn,
     user: dict = Depends(get_current_supabase_user),
 ):
-    return synastry_save(
+    return await synastry_save(
         SaveSynastryIn(
             owner_id=user["id"],
             person_a_id=payload.person_a_id,
@@ -536,6 +537,11 @@ async def horoscope_save(
             "stimmung": horoscope_result["data"].get("stimmung"),
             "text": horoscope_result["data"].get("text"),
             "tipp": horoscope_result["data"].get("tipp"),
+            "fokus": horoscope_result["data"].get("fokus"),
+            "liebe": horoscope_result["data"].get("liebe"),
+            "beruf": horoscope_result["data"].get("beruf"),
+            "ritual": horoscope_result["data"].get("ritual"),
+            "affirmation": horoscope_result["data"].get("affirmation"),
             "model": horoscope_result["data"].get("model"),
             "transits_used": horoscope_result["data"].get("transits_used"),
         },
@@ -543,7 +549,7 @@ async def horoscope_save(
 
 
 @app.post("/synastry/save")
-def synastry_save(
+async def synastry_save(
     payload: SaveSynastryIn,
     _: bool = Depends(require_soraya_api_key),
 ):
@@ -577,6 +583,12 @@ def synastry_save(
     if not saved["ok"]:
         return saved
 
+    # Claude-Deutung (best-effort: faellt sie aus, kommen trotzdem die Aspekte)
+    reading = await generate_synastry_reading(
+        person_a.get("name"), person_b.get("name"), syn["data"]
+    )
+    reading_data = reading["data"] if reading.get("ok") else {}
+
     return {
         "ok": True,
         "data": {
@@ -592,6 +604,11 @@ def synastry_save(
             "score": syn["data"].get("score"),
             "summary": syn["data"].get("summary"),
             "aspects": syn["data"].get("aspects"),
+            "text": reading_data.get("text"),
+            "harmonie": reading_data.get("harmonie"),
+            "spannung": reading_data.get("spannung"),
+            "anziehung": reading_data.get("anziehung"),
+            "kommunikation": reading_data.get("kommunikation"),
         },
     }
 
