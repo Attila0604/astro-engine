@@ -38,18 +38,24 @@ PERIODS = {
         "tip_label": "Tipp des Tages",
         "mood_label": "Stimmung des Tages",
         "max_aspects": 7,
+        "length": "3-4 warme Absaetze",
+        "arc": "Beschreibe die Energie des Tages von morgens bis abends, wenn es sich anbietet.",
     },
     "weekly": {
         "span": "die kommende Woche",
         "tip_label": "Tipp der Woche",
         "mood_label": "Grundton der Woche",
         "max_aspects": 6,
+        "length": "4-5 substanzielle Absaetze",
+        "arc": "Gib der Woche einen Bogen: Wochenbeginn, Mitte, Wochenende -- was baut sich auf, was loest sich.",
     },
     "monthly": {
         "span": "den kommenden Monat",
         "tip_label": "Tipp des Monats",
         "mood_label": "Grundton des Monats",
         "max_aspects": 6,
+        "length": "5-6 substanzielle Absaetze",
+        "arc": "Gliedere den Monat in Phasen (erste Tage, Mitte, letztes Drittel) und zeige die Entwicklung der Themen.",
     },
 }
 
@@ -106,16 +112,25 @@ def _system(period: str) -> str:
         "in diesem Zeitraum energetisch ansteht. Beziehe dich konkret auf die genannten "
         "Transite, aber uebersetze sie in gelebte Alltagssprache statt Fachjargon. "
         "'Im Kommen' heisst, das Thema verstaerkt sich; 'klingt ab' heisst, es loest sich auf. "
+        f"{cfg['arc']} "
         "Bei wenigen oder keinen Transiten ist ein ruhiger, sammelnder Zeitraum voellig in Ordnung "
         "-- erfinde keine Dramatik.\n\n"
         "Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, ohne Markdown, ohne Vorrede, "
         "in genau diesem Format:\n"
         "{\n"
         f'  "stimmung": "<kurze {cfg["mood_label"]}, max 8 Woerter, wie eine Schlagzeile>",\n'
-        '  "text": "<2-3 warme Absaetze, was in diesem Zeitraum dran ist, in du-Form>",\n'
-        f'  "tipp": "<ein konkreter, umsetzbarer {cfg["tip_label"]}, 1-2 Saetze>"\n'
+        f'  "text": "<{cfg["length"]}, was in diesem Zeitraum dran ist, in du-Form>",\n'
+        f'  "tipp": "<ein konkreter, umsetzbarer {cfg["tip_label"]}, 1-2 Saetze>",\n'
+        '  "fokus": "<worauf sich die Person in diesem Zeitraum ausrichten sollte, 2 Saetze>",\n'
+        '  "liebe": "<was in Herz, Naehe und Beziehungen ansteht, 2 Saetze>",\n'
+        '  "beruf": "<was in Arbeit, Richtung und Tatkraft ansteht, 2 Saetze>",\n'
+        '  "ritual": "<ein kleines, konkretes Ritual passend zu den Transiten, 1-2 Saetze>",\n'
+        '  "affirmation": "<eine kraftvolle Ich-Affirmation passend zum Zeitraum, 1 Satz>"\n'
         "}"
     )
+
+
+_FIELDS = ("stimmung", "text", "tipp", "fokus", "liebe", "beruf", "ritual", "affirmation")
 
 
 def _parse_json(raw: str) -> dict:
@@ -124,9 +139,11 @@ def _parse_json(raw: str) -> dict:
         start = raw.index("{")
         end = raw.rindex("}") + 1
         obj = json.loads(raw[start:end])
-        return {"stimmung": obj.get("stimmung"), "text": obj.get("text"), "tipp": obj.get("tipp")}
+        return {k: obj.get(k) for k in _FIELDS}
     except Exception:
-        return {"stimmung": None, "text": raw.strip(), "tipp": None}
+        out = {k: None for k in _FIELDS}
+        out["text"] = raw.strip()
+        return out
 
 
 async def generate_horoscope(person: dict, period: str = "daily", at=None) -> dict:
@@ -148,7 +165,7 @@ async def generate_horoscope(person: dict, period: str = "daily", at=None) -> di
 
     try:
         raw = await _call_claude(_system(period), text + "\n\nSchreibe nun das Horoskop als JSON.",
-                                 max_tokens=1000, model=HOROSCOPE_MODEL)
+                                 max_tokens=2400, model=HOROSCOPE_MODEL)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -158,9 +175,7 @@ async def generate_horoscope(person: dict, period: str = "daily", at=None) -> di
         "data": {
             "period": period,
             "at_utc": tr_res["data"]["meta"]["at_utc"],
-            "stimmung": parsed["stimmung"],
-            "text": parsed["text"],
-            "tipp": parsed["tipp"],
+            **parsed,
             "model": HOROSCOPE_MODEL,
             "transits_used": [
                 {"transit": a["transit_de"], "type": a["type_de"],
