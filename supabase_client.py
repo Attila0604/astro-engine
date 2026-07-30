@@ -116,8 +116,9 @@ def create_person(owner_id: str, person: dict, *, chart_json: Optional[dict] = N
             "chart_json": chart_json,
         }
 
-        # Stabilitaet: Das eigene Profil soll nicht bei jedem Speichern dupliziert werden.
-        # Wenn fuer den eingeloggten User bereits ein Self-Profil existiert, wird das neueste aktualisiert.
+        # Stabilitaet: Das eigene Profil soll nicht dupliziert werden.
+        # Es existiert genau EIN Self-Profil: das neueste wird aktualisiert,
+        # eventuelle alte Duplikate (aus frueheren Speichervorgaengen) werden geloescht.
         if is_self:
             existing_resp = (get_supabase()
                              .table("people")
@@ -125,11 +126,21 @@ def create_person(owner_id: str, person: dict, *, chart_json: Optional[dict] = N
                              .eq("owner_id", owner_id)
                              .eq("is_self", True)
                              .order("created_at", desc=True)
-                             .limit(1)
                              .execute())
             existing_rows = _response_data(existing_resp) or []
             if existing_rows:
-                person_id = existing_rows[0]["id"]
+                person_id = existing_rows[0]["id"]  # neuestes behalten
+                # alte Duplikate entfernen, damit Laden/Speichern immer dasselbe Profil treffen
+                old_ids = [r["id"] for r in existing_rows[1:] if r.get("id")]
+                for old_id in old_ids:
+                    try:
+                        (get_supabase().table("people")
+                         .delete()
+                         .eq("owner_id", owner_id)
+                         .eq("id", old_id)
+                         .execute())
+                    except Exception:
+                        pass
                 update_payload = {k: v for k, v in payload.items() if k != "owner_id"}
                 resp = (get_supabase()
                         .table("people")
