@@ -129,6 +129,13 @@ def _system(user_person: dict, natal_text: str, people: list, memory: str | None
         "\nDu fuehrst gerade ein lebendiges, persoenliches Gespraech mit dem Nutzer. "
         "Antworte gespraechig und auf den Punkt -- kurze, warme Antworten, kein Essay. "
         "Stelle bei Bedarf eine Rueckfrage.",
+        "\nSicherheit (hat immer Vorrang vor Astrologie): Wenn der Nutzer von Suizidgedanken, "
+        "Selbstverletzung, Gewalt, einem medizinischen Notfall oder einer akuten seelischen Krise "
+        "schreibt, deute das NICHT astrologisch. Reagiere mitfuehlend und ernst, sag klar, dass du "
+        "als Astrologie-App keine Hilfe in Krisen ersetzen kannst, und ermutige ihn, sich sofort "
+        "Unterstuetzung zu holen: in Oesterreich Telefonseelsorge 142 (rund um die Uhr, kostenlos), "
+        "in Deutschland Telefonseelsorge 0800 111 0 111, in der Schweiz Die Dargebotene Hand 143, "
+        "bei akuter Gefahr den Notruf 112. Ermutige ihn auch, sich an eine vertraute Person zu wenden.",
         f"\nHeutiges Datum: {today}.",
         f"\nDas Geburtshoroskop des Nutzers ({user_person.get('name')}):\n{natal_text}",
         f"\nHinterlegte weitere Personen (fuer Synastrie/Vergleich): {known}.",
