@@ -1,3 +1,6 @@
+import asyncio
+import os
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI
@@ -46,6 +49,97 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Supabase Keepalive
+# ---------------------------------------------------------------------------
+# Supabase pausiert Free-Projekte nach ca. 7 Tagen ohne Datenbankaktivitaet.
+# Diese Hintergrundaufgabe ruft regelmaessig db_health() auf (echte Abfrage
+# auf die profiles-Tabelle) und haelt die Datenbank so aktiv.
+#
+# Steuerung ueber die Umgebungsvariable KEEPALIVE_STUNDEN:
+#   - nicht gesetzt / ungueltig -> 12 Stunden
+#   - 0 (oder kleiner)          -> Keepalive abgeschaltet
+KEEPALIVE_STANDARD_STUNDEN = 12.0
+KEEPALIVE_ERSTE_WARTEZEIT_SEKUNDEN = 60
+
+_keepalive_task: Optional[asyncio.Task] = None
+
+
+def _keepalive_log(msg: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"[keepalive] {ts} {msg}", flush=True)
+
+
+def _keepalive_stunden() -> float:
+    raw = os.getenv("KEEPALIVE_STUNDEN")
+    if raw is None or raw.strip() == "":
+        return KEEPALIVE_STANDARD_STUNDEN
+    try:
+        return float(raw.strip().replace(",", "."))
+    except ValueError:
+        _keepalive_log(
+            f"Ungueltiger Wert KEEPALIVE_STUNDEN={raw!r}, "
+            f"verwende Standard {KEEPALIVE_STANDARD_STUNDEN:g} Stunden."
+        )
+        return KEEPALIVE_STANDARD_STUNDEN
+
+
+async def _supabase_keepalive_loop(intervall_sekunden: float) -> None:
+    # Erster Lauf verzoegert, damit der App-Start nicht aufgehalten wird.
+    await asyncio.sleep(KEEPALIVE_ERSTE_WARTEZEIT_SEKUNDEN)
+
+    while True:
+        try:
+            # db_health() ist synchron -> im Thread ausfuehren, damit der
+            # Event-Loop (und damit alle Requests) nicht blockiert wird.
+            result = await asyncio.to_thread(db_health)
+            if result.get("ok"):
+                _keepalive_log(f"OK - Supabase erreichbar: {result.get('data')}")
+            else:
+                _keepalive_log(f"FEHLER - Supabase-Abfrage fehlgeschlagen: {result.get('error')}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _keepalive_log(f"FEHLER - Unerwartete Exception: {type(e).__name__}: {e}")
+
+        try:
+            await asyncio.sleep(intervall_sekunden)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Sollte nie passieren; trotzdem nicht in eine Endlosschleife ohne Pause laufen.
+            _keepalive_log(f"FEHLER - sleep fehlgeschlagen: {type(e).__name__}: {e}")
+            await asyncio.sleep(KEEPALIVE_STANDARD_STUNDEN * 3600)
+
+
+@app.on_event("startup")
+async def start_supabase_keepalive():
+    global _keepalive_task
+    try:
+        stunden = _keepalive_stunden()
+        if stunden <= 0:
+            _keepalive_log("Abgeschaltet (KEEPALIVE_STUNDEN=0).")
+            return
+
+        _keepalive_log(
+            f"Gestartet - erster Lauf in {KEEPALIVE_ERSTE_WARTEZEIT_SEKUNDEN} s, "
+            f"danach alle {stunden:g} Stunden."
+        )
+        _keepalive_task = asyncio.create_task(_supabase_keepalive_loop(stunden * 3600))
+    except Exception as e:
+        # Ein Fehler beim Keepalive darf den App-Start niemals verhindern.
+        _keepalive_log(f"FEHLER - Keepalive konnte nicht gestartet werden: {type(e).__name__}: {e}")
+
+
+@app.on_event("shutdown")
+async def stop_supabase_keepalive():
+    try:
+        if _keepalive_task is not None and not _keepalive_task.done():
+            _keepalive_task.cancel()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
