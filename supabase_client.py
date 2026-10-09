@@ -301,6 +301,38 @@ def save_synastry(owner_id: str, person_a_id: str, person_b_id: str,
         return _err(f"{type(e).__name__}: {e}")
 
 
+def get_synastry(owner_id: str, person_a_id: str, person_b_id: str) -> dict:
+    """Gespeicherte Synastrie eines Paares (oder None)."""
+    try:
+        resp = (get_supabase()
+                .table("synastries")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("person_a_id", person_a_id)
+                .eq("person_b_id", person_b_id)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def update_person_chart(owner_id: str, person_id: str, chart_json: dict) -> dict:
+    """Speichert ein neu berechnetes Radix an der Person (Cache fuer /mobile/chart)."""
+    try:
+        resp = (get_supabase()
+                .table("people")
+                .update({"chart_json": chart_json})
+                .eq("owner_id", owner_id)
+                .eq("id", person_id)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
 def create_conversation(owner_id: str, title: Optional[str] = None) -> dict:
     try:
         payload = {"owner_id": owner_id, "title": title or "Neue Soraya-Unterhaltung"}

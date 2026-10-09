@@ -50,17 +50,17 @@ HOUSE_SYSTEM = "P"
 # ---------------------------------------------------------------------------
 SIGNS_DE = {
     "Ari": "Widder", "Tau": "Stier", "Gem": "Zwillinge", "Can": "Krebs",
-    "Leo": "Loewe", "Vir": "Jungfrau", "Lib": "Waage", "Sco": "Skorpion",
-    "Sag": "Schuetze", "Cap": "Steinbock", "Aqu": "Wassermann", "Pis": "Fische",
+    "Leo": "Löwe", "Vir": "Jungfrau", "Lib": "Waage", "Sco": "Skorpion",
+    "Sag": "Schütze", "Cap": "Steinbock", "Aqu": "Wassermann", "Pis": "Fische",
 }
 ELEMENTS_DE = {"Fire": "Feuer", "Earth": "Erde", "Air": "Luft", "Water": "Wasser"}
-QUALITIES_DE = {"Cardinal": "kardinal", "Fixed": "fix", "Mutable": "veraenderlich"}
+QUALITIES_DE = {"Cardinal": "kardinal", "Fixed": "fix", "Mutable": "veränderlich"}
 PLANETS_DE = {
     "Sun": "Sonne", "Moon": "Mond", "Mercury": "Merkur", "Venus": "Venus",
     "Mars": "Mars", "Jupiter": "Jupiter", "Saturn": "Saturn", "Uranus": "Uranus",
     "Neptune": "Neptun", "Pluto": "Pluto", "Chiron": "Chiron",
     "True_North_Lunar_Node": "Mondknoten (Nord)",
-    "True_South_Lunar_Node": "Mondknoten (Sued)",
+    "True_South_Lunar_Node": "Mondknoten (Süd)",
     "Mean_Lilith": "Lilith",
     "Ascendant": "Aszendent", "Medium_Coeli": "MC (Himmelsmitte)",
     "Descendant": "Deszendent", "Imum_Coeli": "IC",

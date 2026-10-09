@@ -27,12 +27,55 @@ _FIELDS = ("text", "harmonie", "spannung", "anziehung", "kommunikation")
 
 _MAX_ASPECTS = 12  # engste zuerst; mehr ist fuer eine Deutung Rauschen
 
+# kerykeion liefert einen Punktwert nach Ciro Discepolo (0 bis ca. 40), KEINE
+# Prozentzahl. Fuer die App wird er in eine verstaendliche Prozentskala und ein
+# deutsches Label uebersetzt (29 Punkte = "Exceptional" -> ca. 89 %, nicht 29 %).
+_SCORE_POINTS = [(0, 35), (5, 50), (10, 62), (15, 72), (20, 80), (30, 90), (40, 96)]
+
+SCORE_LABELS_DE = {
+    "Minimal": "Leise Verbindung",
+    "Medium": "Spürbare Verbindung",
+    "Important": "Bedeutsame Verbindung",
+    "Very Important": "Sehr bedeutsame Verbindung",
+    "Exceptional": "Außergewöhnliche Verbindung",
+    "Rare Exceptional": "Seltene, außergewöhnliche Verbindung",
+}
+
+
+def score_percent(value) -> int | None:
+    """Discepolo-Punkte -> Prozent (stueckweise linear, gedeckelt bei 97)."""
+    if not isinstance(value, (int, float)):
+        return None
+    v = max(0.0, float(value))
+    for (x0, y0), (x1, y1) in zip(_SCORE_POINTS, _SCORE_POINTS[1:]):
+        if v <= x1:
+            return int(round(y0 + (y1 - y0) * (v - x0) / (x1 - x0)))
+    return 97
+
+
+def score_label(description) -> str:
+    return SCORE_LABELS_DE.get(description or "", "Kosmische Verbindung")
+
 
 def _aspects_to_text(name_a: str, name_b: str, syn: dict) -> str:
     lines = [f"Synastrie zwischen {name_a} (Person A) und {name_b} (Person B)."]
+    # score ist ein dict {"value", "description", ...} -- frueher wurde es als
+    # Zahl geprueft und kam deshalb nie bei Claude an.
     score = syn.get("score")
-    if isinstance(score, (int, float)):
-        lines.append(f"Kompatibilitaets-Score: {score}.")
+    value = score.get("value") if isinstance(score, dict) else score
+    description = score.get("description") if isinstance(score, dict) else None
+    if isinstance(value, (int, float)):
+        lines.append(
+            f"Kompatibilitaet: {score_label(description)} "
+            f"({value} Punkte nach Discepolo, entspricht etwa {score_percent(value)} %)."
+        )
+    summary = syn.get("summary") or {}
+    if summary:
+        lines.append(
+            f"Grundton: {summary.get('tone')} "
+            f"({summary.get('harmonious', 0)} harmonische, "
+            f"{summary.get('challenging', 0)} spannungsreiche Aspekte)."
+        )
 
     aspects = (syn.get("aspects") or [])[:_MAX_ASPECTS]
     if aspects:
