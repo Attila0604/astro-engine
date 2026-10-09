@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI
@@ -14,7 +14,8 @@ from synastry_reading import generate_synastry_reading
 from chat import chat_turn, update_memory
 from geocode import geocode_place
 from auth_guard import require_soraya_api_key
-from auth_user import get_current_supabase_user
+from auth_user import get_current_supabase_user, require_user_or_api_key
+import limits
 from supabase_client import (
     db_health,
     create_person,
@@ -23,6 +24,7 @@ from supabase_client import (
     person_row_to_engine_person,
     get_latest_analysis,
     save_analysis,
+    get_cached_horoscope,
     save_horoscope,
     save_synastry,
     create_conversation,
@@ -33,7 +35,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.4")
+app = FastAPI(title="Soraya Astro Engine", version="2.5")
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +273,49 @@ class MobileMemorySaveIn(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Kostenbremse: Groessenlimits fuer Eingaben, die an Claude gehen
+# ---------------------------------------------------------------------------
+MAX_CHAT_ZEICHEN = 2000
+MAX_MEMORY_ZEICHEN = 4000
+MAX_PEOPLE_IDS = 10
+
+
+def _check_chat_message(message: str) -> Optional[dict]:
+    text = (message or "").strip()
+    if not text:
+        return {"ok": False, "error": "Bitte schreib eine Nachricht."}
+    if len(text) > MAX_CHAT_ZEICHEN:
+        return {
+            "ok": False,
+            "error": f"Deine Nachricht ist zu lang (maximal {MAX_CHAT_ZEICHEN} Zeichen).",
+        }
+    return None
+
+
+def _cap_memory(memory: Optional[str]) -> Optional[str]:
+    if memory is None:
+        return None
+    return str(memory)[:MAX_MEMORY_ZEICHEN]
+
+
+def _cap_people_ids(ids: List[str]) -> List[str]:
+    seen = []
+    for pid in ids or []:
+        if pid and pid not in seen:
+            seen.append(pid)
+    return seen[:MAX_PEOPLE_IDS]
+
+
+def _horoscope_cache_since(period: str, today: date) -> date:
+    """Ab welchem Datum ein gespeichertes Horoskop noch gilt."""
+    if period == "weekly":
+        return today - timedelta(days=today.weekday())
+    if period == "monthly":
+        return today.replace(day=1)
+    return today
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 def _resolve_person(p: PersonIn) -> dict:
@@ -330,8 +375,8 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.4",
-        "security": "mobile endpoints use Authorization Bearer Supabase token; CORS enabled for web app",
+        "version": "2.5",
+        "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
             "/mobile/people/create",
@@ -499,8 +544,12 @@ async def mobile_memory_save(
     m: MobileMemorySaveIn,
     user: dict = Depends(get_current_supabase_user),
 ):
-    gen = await update_memory([x.model_dump() for x in m.messages], m.memory)
+    limits.reserve(user["id"], "gedaechtnis")
+    gen = await update_memory(
+        [x.model_dump() for x in m.messages[-40:]], _cap_memory(m.memory)
+    )
     if not gen["ok"]:
+        limits.release(user["id"], "gedaechtnis")
         return gen
 
     saved = update_profile_memory(user["id"], gen["data"]["memory"])
@@ -576,9 +625,12 @@ async def analysis_save(
     if not person_row["ok"]:
         return person_row
 
+    # Kostenbremse: nur echte Neu-Erzeugungen zaehlen, nicht der Cache oben.
+    limits.reserve(payload.owner_id, "analyse")
     person = person_row_to_engine_person(person_row["data"])
     reading = await generate_full_analysis(person)
     if not reading["ok"]:
+        limits.release(payload.owner_id, "analyse")
         return reading
 
     saved = save_analysis(payload.owner_id, payload.person_id, reading)
@@ -611,8 +663,44 @@ async def horoscope_save(
         return person_row
 
     person = person_row_to_engine_person(person_row["data"])
-    horoscope_result = await generate_horoscope(person, payload.period, payload.at)
+    period = (payload.period or "daily").lower()
+
+    # Kostenbremse: dasselbe Horoskop (heute / diese Woche / dieser Monat)
+    # wird aus der Datenbank geliefert statt neu bei Claude bestellt.
+    today = datetime.now(timezone.utc).date()
+    if not payload.at or str(payload.at)[:10] == today.isoformat():
+        since = _horoscope_cache_since(period, today).isoformat()
+        cached = get_cached_horoscope(payload.owner_id, payload.person_id, period, since)
+        if cached["ok"] and cached["data"]:
+            row = cached["data"]
+            details = row.get("details") or {}
+            return {
+                "ok": True,
+                "data": {
+                    "source": "cached",
+                    "horoscope": row,
+                    "person": {
+                        "id": payload.person_id,
+                        "name": person.get("name"),
+                    },
+                    "period": row.get("period"),
+                    "stimmung": row.get("stimmung"),
+                    "text": row.get("body"),
+                    "tipp": row.get("tipp"),
+                    "fokus": details.get("fokus"),
+                    "liebe": details.get("liebe"),
+                    "beruf": details.get("beruf"),
+                    "ritual": details.get("ritual"),
+                    "affirmation": details.get("affirmation"),
+                    "model": row.get("model"),
+                    "transits_used": row.get("transits_used"),
+                },
+            }
+
+    limits.reserve(payload.owner_id, "horoskop")
+    horoscope_result = await generate_horoscope(person, period, payload.at)
     if not horoscope_result["ok"]:
+        limits.release(payload.owner_id, "horoskop")
         return horoscope_result
 
     saved = save_horoscope(payload.owner_id, payload.person_id, horoscope_result)
@@ -622,6 +710,7 @@ async def horoscope_save(
     return {
         "ok": True,
         "data": {
+            "source": "created",
             "horoscope": saved["data"],
             "person": {
                 "id": payload.person_id,
@@ -664,8 +753,10 @@ async def synastry_save(
     person_a = person_row_to_engine_person(row_a["data"])
     person_b = person_row_to_engine_person(row_b["data"])
 
+    limits.reserve(payload.owner_id, "synastrie")
     syn = ce.compute_synastry(person_a, person_b)
     if not syn["ok"]:
+        limits.release(payload.owner_id, "synastrie")
         return syn
 
     saved = save_synastry(
@@ -712,6 +803,10 @@ async def chat_save(
     payload: ChatSaveIn,
     _: bool = Depends(require_soraya_api_key),
 ):
+    invalid = _check_chat_message(payload.message)
+    if invalid:
+        return invalid
+
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
         return person_row
@@ -719,7 +814,9 @@ async def chat_save(
     user_person = person_row_to_engine_person(person_row["data"])
 
     people = []
-    for pid in payload.people_ids:
+    for pid in _cap_people_ids(payload.people_ids):
+        if pid == payload.person_id:
+            continue
         other_row = get_person(payload.owner_id, pid)
         if not other_row["ok"]:
             return {
@@ -728,11 +825,15 @@ async def chat_save(
             }
         people.append(person_row_to_engine_person(other_row["data"]))
 
+    # Kostenbremse: vor dem Anlegen einer Unterhaltung pruefen.
+    limits.reserve(payload.owner_id, "chat")
+
     conversation_id = payload.conversation_id
     if not conversation_id:
         title = payload.message.strip()[:80] or "Neue Soraya-Unterhaltung"
         conv = create_conversation(payload.owner_id, title=title)
         if not conv["ok"]:
+            limits.release(payload.owner_id, "chat")
             return conv
         conversation_id = conv["data"]["id"]
 
@@ -742,6 +843,7 @@ async def chat_save(
         limit=50,
     )
     if not previous["ok"]:
+        limits.release(payload.owner_id, "chat")
         return previous
 
     history = _rows_to_chat_history(previous["data"])
@@ -757,9 +859,10 @@ async def chat_save(
         people,
         history,
         payload.message,
-        memory,
+        _cap_memory(memory),
     )
     if not reply_result["ok"]:
+        limits.release(payload.owner_id, "chat")
         return reply_result
 
     user_saved = save_message(
@@ -798,8 +901,15 @@ async def chat_save(
 # ---------------------------------------------------------------------------
 # Direkte/testbare Engine Endpoints
 # ---------------------------------------------------------------------------
+def _count_engine_call(owner_id: str) -> None:
+    """Chart-Berechnungen: nur eingeloggte User werden gezaehlt (API-Key nicht)."""
+    if owner_id:
+        limits.reserve(owner_id, "berechnung")
+
+
 @app.post("/chart")
-def chart(p: PersonIn):
+def chart(p: PersonIn, owner_id: str = Depends(require_user_or_api_key)):
+    _count_engine_call(owner_id)
     r = _resolve_person(p)
     if not r["ok"]:
         return r
@@ -808,7 +918,8 @@ def chart(p: PersonIn):
 
 
 @app.post("/transits")
-def transits(t: TransitIn):
+def transits(t: TransitIn, owner_id: str = Depends(require_user_or_api_key)):
+    _count_engine_call(owner_id)
     r = _resolve_person(t.person)
     if not r["ok"]:
         return r
@@ -817,7 +928,8 @@ def transits(t: TransitIn):
 
 
 @app.post("/synastry")
-def synastry(s: SynastryIn):
+def synastry(s: SynastryIn, owner_id: str = Depends(require_user_or_api_key)):
+    _count_engine_call(owner_id)
     ra = _resolve_person(s.person_a)
     if not ra["ok"]:
         return ra
@@ -892,8 +1004,12 @@ async def memory_save(
     m: MemorySaveIn,
     _: bool = Depends(require_soraya_api_key),
 ):
-    gen = await update_memory([x.model_dump() for x in m.messages], m.memory)
+    limits.reserve(m.owner_id, "gedaechtnis")
+    gen = await update_memory(
+        [x.model_dump() for x in m.messages[-40:]], _cap_memory(m.memory)
+    )
     if not gen["ok"]:
+        limits.release(m.owner_id, "gedaechtnis")
         return gen
 
     saved = update_profile_memory(m.owner_id, gen["data"]["memory"])

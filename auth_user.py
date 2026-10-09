@@ -11,6 +11,7 @@ owner_id kommt dadurch nicht mehr aus dem Request-Body.
 
 from __future__ import annotations
 
+import hmac
 import os
 from typing import Any
 
@@ -56,3 +57,21 @@ async def get_current_supabase_user(authorization: str | None = Header(default=N
         raise HTTPException(status_code=401, detail="Supabase User konnte nicht gelesen werden.")
 
     return user
+
+
+async def require_user_or_api_key(
+    authorization: str | None = Header(default=None),
+    x_soraya_api_key: str | None = Header(default=None),
+) -> str:
+    """
+    Fuer /chart, /transits und /synastry: entweder eingeloggter Supabase-User
+    (App) oder der geheime SORAYA_API_KEY (Tests/Server-zu-Server).
+
+    Rueckgabe: die User-ID (fuer Tageslimits) oder "" beim API-Key.
+    """
+    expected = os.environ.get("SORAYA_API_KEY")
+    if expected and x_soraya_api_key and hmac.compare_digest(x_soraya_api_key, expected):
+        return ""
+
+    user = await get_current_supabase_user(authorization)
+    return user["id"]
