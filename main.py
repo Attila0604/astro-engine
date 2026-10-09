@@ -39,7 +39,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.7")
+app = FastAPI(title="Soraya Astro Engine", version="2.8")
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +392,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.7",
+        "version": "2.8",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -402,6 +402,7 @@ def health():
             "/mobile/horoscope/save",
             "/mobile/synastry/save",
             "/mobile/chat/save",
+            "/mobile/chat/history",
             "/mobile/memory/save",
             "/mobile/chart",
             "/mobile/transits",
@@ -558,6 +559,27 @@ async def mobile_chat_save(
         ),
         True,
     )
+
+
+@app.get("/mobile/chat/history")
+def mobile_chat_history(
+    conversation_id: str,
+    limit: int = 30,
+    user: dict = Depends(get_current_supabase_user),
+):
+    """
+    Letzte Nachrichten einer EIGENEN Unterhaltung (owner_id aus dem Token),
+    damit die App den Chat nach einem Neustart wieder anzeigen kann.
+    """
+    rows = get_conversation_messages(user["id"], conversation_id, limit=max(1, min(int(limit or 30), 50)))
+    if not rows["ok"]:
+        return rows
+    messages = [
+        {"role": r.get("role"), "content": r.get("content") or "", "created_at": r.get("created_at")}
+        for r in rows["data"]
+        if r.get("role") in ("user", "assistant") and r.get("content")
+    ]
+    return {"ok": True, "data": {"conversation_id": conversation_id, "messages": messages}}
 
 
 @app.post("/mobile/memory/save")
