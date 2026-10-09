@@ -222,6 +222,33 @@ def save_analysis(owner_id: str, person_id: str, analysis_result: dict) -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
+HOROSCOPE_DETAIL_FIELDS = ("fokus", "liebe", "beruf", "ritual", "affirmation")
+
+
+def get_cached_horoscope(owner_id: str, person_id: str, period: str, since_date: str) -> dict:
+    """
+    Kostenbremse: liefert ein bereits erzeugtes Horoskop fuer denselben Zeitraum
+    (daily = heute, weekly = diese Woche, monthly = dieser Monat) oder None.
+    Nur Zeilen mit details zaehlen, damit alle Felder angezeigt werden koennen.
+    """
+    try:
+        resp = (get_supabase()
+                .table("horoscopes")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("person_id", person_id)
+                .eq("period", period)
+                .gte("target_date", since_date)
+                .not_.is_("details", "null")
+                .order("target_date", desc=True)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
 def save_horoscope(owner_id: str, person_id: str, horoscope_result: dict,
                    *, target_date: Optional[str] = None) -> dict:
     try:
@@ -236,6 +263,8 @@ def save_horoscope(owner_id: str, person_id: str, horoscope_result: dict,
             "tipp": data.get("tipp"),
             "transits_used": data.get("transits_used"),
             "model": data.get("model"),
+            # Zusatzfelder, damit ein gecachtes Horoskop vollstaendig angezeigt wird.
+            "details": {k: data.get(k) for k in HOROSCOPE_DETAIL_FIELDS},
         }
         resp = (get_supabase()
                 .table("horoscopes")
@@ -339,10 +368,10 @@ def get_profile_memory(owner_id: str) -> dict:
 def update_profile_memory(owner_id: str, memory: Any) -> dict:
     """Speichert Soraya-Memory. Wenn die Tabelle/Spalte fehlt, bleibt die App trotzdem stabil."""
     try:
+        # profiles hat keine Spalte updated_at -- frueher scheiterte jedes Speichern daran.
         payload = {
             "id": owner_id,
             "memory": memory,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         resp = (get_supabase()
                 .table("profiles")
