@@ -4,7 +4,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,7 @@ from synastry_reading import generate_synastry_reading, score_label, score_perce
 from chat import chat_turn, update_memory
 from geocode import geocode_place
 from sky import sky_today
+import public_content
 from auth_guard import require_soraya_api_key
 from auth_user import get_current_supabase_user, require_user_or_api_key
 import limits
@@ -39,7 +40,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.8")
+app = FastAPI(title="Soraya Astro Engine", version="2.9")
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +245,14 @@ class MobileTransitsIn(BaseModel):
     at: Optional[str] = None
 
 
+class PublicPreviewIn(BaseModel):
+    year: int
+    month: int
+    day: int
+    hour: Optional[int] = None
+    minute: Optional[int] = None
+
+
 class TransitIn(BaseModel):
     person: PersonIn
     at: Optional[str] = None
@@ -392,7 +401,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.8",
+        "version": "2.9",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -407,6 +416,8 @@ def health():
             "/mobile/chart",
             "/mobile/transits",
             "/sky",
+            "/public/preview",
+            "/public/sign-horoscope",
             "/chart",
             "/people/create",
             "/analysis/save",
@@ -680,6 +691,30 @@ def mobile_transits(
 
     limits.reserve(user["id"], "berechnung")
     return ce.compute_transits(_engine_person_from_row(row["data"]), payload.at)
+
+
+# ---------------------------------------------------------------------------
+# Schnellstart OHNE Login (Inhalte vor der Registrierung)
+# ---------------------------------------------------------------------------
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unbekannt"
+
+
+@app.post("/public/preview")
+def public_preview(payload: PublicPreviewIn, request: Request):
+    """Sonne + Mond aus dem Geburtsdatum. Es wird nichts gespeichert."""
+    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
+    return public_content.preview(payload.year, payload.month, payload.day, payload.hour, payload.minute)
+
+
+@app.get("/public/sign-horoscope")
+async def public_sign_horoscope(sign: str, request: Request):
+    """Allgemeines Tageshoroskop fuer ein Sonnenzeichen (1x pro Tag und Zeichen erzeugt)."""
+    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
+    return await public_content.sign_horoscope(sign)
 
 
 @app.get("/sky")

@@ -30,6 +30,8 @@ LIMITS = {
     "synastrie": ("LIMIT_SYNASTRIE", 10, "Partner-Vergleiche"),
     "berechnung": ("LIMIT_BERECHNUNG", 300, "Chart-Berechnungen"),
     "gedaechtnis": ("LIMIT_GEDAECHTNIS", 10, "Gedaechtnis-Updates"),
+    # Schnellstart ohne Login, pro IP-Adresse
+    "oeffentlich": ("LIMIT_OEFFENTLICH", 60, "Vorschau-Abfragen"),
 }
 
 _lock = threading.Lock()
