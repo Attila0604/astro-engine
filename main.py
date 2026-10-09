@@ -39,7 +39,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.6")
+app = FastAPI(title="Soraya Astro Engine", version="2.7")
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +175,7 @@ class SaveAnalysisIn(BaseModel):
     owner_id: str
     person_id: str
     force_new: bool = False
+    only_cached: bool = False
 
 
 class SaveHoroscopeIn(BaseModel):
@@ -210,6 +211,9 @@ class MobileCreatePersonIn(BaseModel):
 class MobileSaveAnalysisIn(BaseModel):
     person_id: str
     force_new: bool = False
+    # Nur eine gespeicherte Analyse liefern, nie eine neue erzeugen
+    # (fuer automatisches Oeffnen in der App).
+    only_cached: bool = False
 
 
 class MobileSaveHoroscopeIn(BaseModel):
@@ -388,7 +392,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.6",
+        "version": "2.7",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -501,6 +505,7 @@ async def mobile_analysis_save(
             owner_id=user["id"],
             person_id=payload.person_id,
             force_new=payload.force_new,
+            only_cached=payload.only_cached,
         ),
         True,
     )
@@ -716,6 +721,9 @@ async def analysis_save(
                     "note": "Vorhandene Analyse wiederverwendet. Fuer neue Analyse force_new=true senden.",
                 },
             }
+
+    if payload.only_cached and not payload.force_new:
+        return {"ok": True, "data": {"source": "none", "analysis": None}}
 
     person_row = get_person(payload.owner_id, payload.person_id)
     if not person_row["ok"]:
