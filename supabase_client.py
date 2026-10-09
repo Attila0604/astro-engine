@@ -361,6 +361,14 @@ def save_sign_horoscope(row: dict) -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
+def increment_public_usage(kind: str) -> None:
+    """Anonymer Tageszaehler (nur Anzahl). Fehler werden ignoriert."""
+    try:
+        get_supabase().rpc("increment_public_usage", {"p_kind": kind}).execute()
+    except Exception:
+        pass
+
+
 def create_conversation(owner_id: str, title: Optional[str] = None) -> dict:
     try:
         payload = {"owner_id": owner_id, "title": title or "Neue Soraya-Unterhaltung"}

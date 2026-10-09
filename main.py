@@ -32,6 +32,7 @@ from supabase_client import (
     save_synastry,
     get_synastry,
     update_person_chart,
+    increment_public_usage,
     create_conversation,
     save_message,
     get_conversation_messages,
@@ -40,7 +41,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.9")
+app = FastAPI(title="Soraya Astro Engine", version="2.10")
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +402,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.9",
+        "version": "2.10",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -418,6 +419,7 @@ def health():
             "/sky",
             "/public/preview",
             "/public/sign-horoscope",
+            "/public/event",
             "/chart",
             "/people/create",
             "/analysis/save",
@@ -707,14 +709,38 @@ def _client_ip(request: Request) -> str:
 def public_preview(payload: PublicPreviewIn, request: Request):
     """Sonne + Mond aus dem Geburtsdatum. Es wird nichts gespeichert."""
     limits.reserve("ip:" + _client_ip(request), "oeffentlich")
-    return public_content.preview(payload.year, payload.month, payload.day, payload.hour, payload.minute)
+    result = public_content.preview(payload.year, payload.month, payload.day, payload.hour, payload.minute)
+    if result.get("ok"):
+        increment_public_usage("preview")
+    return result
 
 
 @app.get("/public/sign-horoscope")
 async def public_sign_horoscope(sign: str, request: Request):
     """Allgemeines Tageshoroskop fuer ein Sonnenzeichen (1x pro Tag und Zeichen erzeugt)."""
     limits.reserve("ip:" + _client_ip(request), "oeffentlich")
-    return await public_content.sign_horoscope(sign)
+    result = await public_content.sign_horoscope(sign)
+    if result.get("ok"):
+        increment_public_usage("sign_horoscope")
+    return result
+
+
+# Nur diese anonymen Ereignisse darf die App melden (reiner Zaehler).
+PUBLIC_EVENTS = {"register_click", "quickstart_open"}
+
+
+class PublicEventIn(BaseModel):
+    kind: str
+
+
+@app.post("/public/event")
+def public_event(payload: PublicEventIn, request: Request):
+    """Anonymer Zaehler fuer Schnellstart-Ereignisse (keine Personendaten)."""
+    if payload.kind not in PUBLIC_EVENTS:
+        return {"ok": False, "error": "Unbekanntes Ereignis."}
+    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
+    increment_public_usage(payload.kind)
+    return {"ok": True}
 
 
 @app.get("/sky")
