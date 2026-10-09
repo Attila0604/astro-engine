@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
@@ -10,9 +11,10 @@ from pydantic import BaseModel, Field
 import chart_engine as ce
 from analysis import generate_full_analysis
 from horoscope import generate_horoscope
-from synastry_reading import generate_synastry_reading
+from synastry_reading import generate_synastry_reading, score_label, score_percent
 from chat import chat_turn, update_memory
 from geocode import geocode_place
+from sky import sky_today
 from auth_guard import require_soraya_api_key
 from auth_user import get_current_supabase_user, require_user_or_api_key
 import limits
@@ -27,6 +29,8 @@ from supabase_client import (
     get_cached_horoscope,
     save_horoscope,
     save_synastry,
+    get_synastry,
+    update_person_chart,
     create_conversation,
     save_message,
     get_conversation_messages,
@@ -35,7 +39,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.5")
+app = FastAPI(title="Soraya Astro Engine", version="2.6")
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +231,15 @@ class MobileChatSaveIn(BaseModel):
     people_ids: List[str] = Field(default_factory=list)
 
 
+class MobilePersonRefIn(BaseModel):
+    person_id: str
+
+
+class MobileTransitsIn(BaseModel):
+    person_id: str
+    at: Optional[str] = None
+
+
 class TransitIn(BaseModel):
     person: PersonIn
     at: Optional[str] = None
@@ -375,7 +388,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.5",
+        "version": "2.6",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -386,6 +399,9 @@ def health():
             "/mobile/synastry/save",
             "/mobile/chat/save",
             "/mobile/memory/save",
+            "/mobile/chart",
+            "/mobile/transits",
+            "/sky",
             "/chart",
             "/people/create",
             "/analysis/save",
@@ -563,6 +579,86 @@ async def mobile_memory_save(
             "profile": saved["data"],
         },
     }
+
+
+# Alte Charts in der Datenbank wurden mit ASCII-Umlauten gespeichert.
+_OLD_SIGN_NAMES = {"Loewe": "Löwe", "Schuetze": "Schütze", "veraenderlich": "veränderlich"}
+
+
+def _fix_old_labels(value):
+    if isinstance(value, dict):
+        return {k: _fix_old_labels(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fix_old_labels(v) for v in value]
+    if isinstance(value, str):
+        return _OLD_SIGN_NAMES.get(value, value)
+    return value
+
+
+def _chart_is_complete(chart) -> bool:
+    return (
+        isinstance(chart, dict)
+        and isinstance(chart.get("points"), list) and chart["points"]
+        and isinstance(chart.get("houses"), list)
+        and isinstance(chart.get("big_three"), dict)
+    )
+
+
+def _engine_person_from_row(row: dict) -> dict:
+    """DB-Person -> Engine-Person. Fehlen Koordinaten, wird einmal geocodet."""
+    person = person_row_to_engine_person(row)
+    if person.get("lat") is None or person.get("lng") is None:
+        geo = geocode_place(person.get("birthplace") or "")
+        if geo.get("ok"):
+            person["lat"] = geo["data"]["lat"]
+            person["lng"] = geo["data"]["lng"]
+    return person
+
+
+@app.post("/mobile/chart")
+def mobile_chart(
+    payload: MobilePersonRefIn,
+    user: dict = Depends(get_current_supabase_user),
+):
+    """
+    Radix einer gespeicherten Person. Nutzt das beim Anlegen gespeicherte
+    chart_json (schnell, kein Geocoding); fehlt es, wird es einmal berechnet
+    und gespeichert.
+    """
+    row = get_person(user["id"], payload.person_id)
+    if not row["ok"]:
+        return row
+
+    stored = row["data"].get("chart_json")
+    if _chart_is_complete(stored):
+        return {"ok": True, "source": "stored", "data": _fix_old_labels(stored)}
+
+    limits.reserve(user["id"], "berechnung")
+    natal = ce.compute_natal(_engine_person_from_row(row["data"]))
+    if not natal["ok"]:
+        return natal
+    update_person_chart(user["id"], payload.person_id, natal["data"])
+    return {"ok": True, "source": "computed", "data": natal["data"]}
+
+
+@app.post("/mobile/transits")
+def mobile_transits(
+    payload: MobileTransitsIn,
+    user: dict = Depends(get_current_supabase_user),
+):
+    """Aktuelle Transite einer gespeicherten Person (Koordinaten aus der DB)."""
+    row = get_person(user["id"], payload.person_id)
+    if not row["ok"]:
+        return row
+
+    limits.reserve(user["id"], "berechnung")
+    return ce.compute_transits(_engine_person_from_row(row["data"]), payload.at)
+
+
+@app.get("/sky")
+def sky():
+    """Himmel heute (fuer alle gleich, stuendlich gecacht, kein Login noetig)."""
+    return sky_today()
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +848,20 @@ async def synastry_save(
 
     person_a = person_row_to_engine_person(row_a["data"])
     person_b = person_row_to_engine_person(row_b["data"])
+    fingerprint = _synastry_fingerprint(row_a["data"], row_b["data"])
+
+    # Kostenbremse: Gleiches Paar mit unveraenderten Geburtsdaten -> gespeicherte
+    # Deutung wiederverwenden statt Claude erneut zu bezahlen.
+    existing = get_synastry(payload.owner_id, payload.person_a_id, payload.person_b_id)
+    if existing["ok"] and existing["data"]:
+        cached_reading = _parse_synastry_reading(existing["data"].get("reading"))
+        if cached_reading and cached_reading.get("fp") == fingerprint and cached_reading.get("text"):
+            row = existing["data"]
+            return _synastry_response(
+                payload, person_a, person_b, row,
+                {"score": row.get("score"), "summary": row.get("summary"), "aspects": row.get("aspects")},
+                cached_reading, source="cached",
+            )
 
     limits.reserve(payload.owner_id, "synastrie")
     syn = ce.compute_synastry(person_a, person_b)
@@ -759,41 +869,75 @@ async def synastry_save(
         limits.release(payload.owner_id, "synastrie")
         return syn
 
-    saved = save_synastry(
-        payload.owner_id,
-        payload.person_a_id,
-        payload.person_b_id,
-        syn,
-    )
-    if not saved["ok"]:
-        return saved
-
     # Claude-Deutung (best-effort: faellt sie aus, kommen trotzdem die Aspekte)
     reading = await generate_synastry_reading(
         person_a.get("name"), person_b.get("name"), syn["data"]
     )
     reading_data = reading["data"] if reading.get("ok") else {}
+    if not reading.get("ok"):
+        limits.release(payload.owner_id, "synastrie")
 
+    stored_reading = None
+    if reading_data.get("text"):
+        stored_reading = json.dumps(
+            {"fp": fingerprint, **{k: reading_data.get(k) for k in SYNASTRY_READING_FIELDS}},
+            ensure_ascii=False,
+        )
+
+    saved = save_synastry(
+        payload.owner_id,
+        payload.person_a_id,
+        payload.person_b_id,
+        syn,
+        reading=stored_reading,
+    )
+    if not saved["ok"]:
+        return saved
+
+    return _synastry_response(
+        payload, person_a, person_b, saved["data"], syn["data"], reading_data, source="created",
+    )
+
+
+SYNASTRY_READING_FIELDS = ("text", "harmonie", "spannung", "anziehung", "kommunikation")
+
+
+def _synastry_fingerprint(row_a: dict, row_b: dict) -> str:
+    """Aendern sich Geburtsdaten einer Person, wird die Deutung neu erstellt."""
+    parts = []
+    for row in (row_a, row_b):
+        parts.append("|".join(str(row.get(k) or "") for k in (
+            "birth_date", "birth_time", "time_known", "lat", "lng", "name")))
+    return "#".join(parts)
+
+
+def _parse_synastry_reading(raw) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+        return obj if isinstance(obj, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _synastry_response(payload, person_a, person_b, row, syn_data, reading_data, *, source):
+    score = syn_data.get("score") or {}
+    value = score.get("value") if isinstance(score, dict) else score
+    description = score.get("description") if isinstance(score, dict) else None
     return {
         "ok": True,
         "data": {
-            "synastry": saved["data"],
-            "person_a": {
-                "id": payload.person_a_id,
-                "name": person_a.get("name"),
-            },
-            "person_b": {
-                "id": payload.person_b_id,
-                "name": person_b.get("name"),
-            },
-            "score": syn["data"].get("score"),
-            "summary": syn["data"].get("summary"),
-            "aspects": syn["data"].get("aspects"),
-            "text": reading_data.get("text"),
-            "harmonie": reading_data.get("harmonie"),
-            "spannung": reading_data.get("spannung"),
-            "anziehung": reading_data.get("anziehung"),
-            "kommunikation": reading_data.get("kommunikation"),
+            "source": source,
+            "synastry": row,
+            "person_a": {"id": payload.person_a_id, "name": person_a.get("name")},
+            "person_b": {"id": payload.person_b_id, "name": person_b.get("name")},
+            "score": score,
+            "score_percent": score_percent(value),
+            "score_label": score_label(description),
+            "summary": syn_data.get("summary"),
+            "aspects": syn_data.get("aspects"),
+            **{k: (reading_data or {}).get(k) for k in SYNASTRY_READING_FIELDS},
         },
     }
 
