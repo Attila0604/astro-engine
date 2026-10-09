@@ -333,6 +333,34 @@ def update_person_chart(owner_id: str, person_id: str, chart_json: dict) -> dict
         return _err(f"{type(e).__name__}: {e}")
 
 
+def get_sign_horoscope(sign: str, target_date: str) -> dict:
+    """Allgemeines Sternzeichen-Tageshoroskop (Schnellstart ohne Login)."""
+    try:
+        resp = (get_supabase()
+                .table("sign_horoscopes")
+                .select("*")
+                .eq("sign", sign)
+                .eq("target_date", target_date)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def save_sign_horoscope(row: dict) -> dict:
+    try:
+        resp = (get_supabase()
+                .table("sign_horoscopes")
+                .upsert(row, on_conflict="sign,target_date")
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else row)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
 def create_conversation(owner_id: str, title: Optional[str] = None) -> dict:
     try:
         payload = {"owner_id": owner_id, "title": title or "Neue Soraya-Unterhaltung"}
