@@ -25,13 +25,14 @@ from agents import (
     _domain_system,
     _domain_user,
     chart_to_text,
+    with_lang,
 )
 
 
-async def _run_domain_agents(chart_text: str) -> dict:
+async def _run_domain_agents(chart_text: str, lang: str = "de") -> dict:
     """Alle Domaenen-Agenten gleichzeitig -- spart Wartezeit."""
     tasks = [
-        _call_claude(_domain_system(d), _domain_user(chart_text), max_tokens=1200)
+        _call_claude(with_lang(_domain_system(d), lang), _domain_user(chart_text), max_tokens=1200)
         for d in DOMAINS
     ]
     texts = await asyncio.gather(*tasks)
@@ -68,7 +69,7 @@ def _synthesis_user(chart_text: str, sections: dict) -> str:
     )
 
 
-async def generate_full_analysis(person: dict) -> dict:
+async def generate_full_analysis(person: dict, lang: str = "de") -> dict:
     """Komplette Tiefen-Analyse fuer eine Person."""
     natal_res = ce.compute_natal(person)
     if not natal_res["ok"]:
@@ -77,9 +78,9 @@ async def generate_full_analysis(person: dict) -> dict:
 
     try:
         chart_text = chart_to_text(natal)
-        sections = await _run_domain_agents(chart_text)
+        sections = await _run_domain_agents(chart_text, lang)
         reading = await _call_claude(
-            _synthesis_system(),
+            with_lang(_synthesis_system(), lang),
             _synthesis_user(chart_text, sections),
             max_tokens=6000,
         )

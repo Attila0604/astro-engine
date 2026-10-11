@@ -23,7 +23,7 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 import chart_engine as ce
-from agents import PERSONA, _call_claude
+from agents import PERSONA, _call_claude, norm_lang, with_lang
 from sky import sky_today
 from supabase_client import get_sign_horoscope, save_sign_horoscope
 
@@ -156,19 +156,20 @@ def _row_to_data(row: dict, sign: str, source: str) -> dict:
     }
 
 
-async def sign_horoscope(sign: str) -> dict:
+async def sign_horoscope(sign: str, lang: str = "de") -> dict:
     if sign not in SIGN_KEYS:
         return {"ok": False, "error": "Unbekanntes Sternzeichen."}
+    lang = norm_lang(lang)
     today = datetime.now(timezone.utc).date().isoformat()
 
-    cached = get_sign_horoscope(sign, today)
+    cached = get_sign_horoscope(sign, today, lang)
     if cached["ok"] and cached["data"]:
         return {"ok": True, "data": _row_to_data(cached["data"], sign, "cached")}
 
-    lock = _locks.setdefault(sign, asyncio.Lock())
+    lock = _locks.setdefault(sign + ":" + lang, asyncio.Lock())
     async with lock:
         # Waehrend wir gewartet haben, koennte es ein anderer Aufruf erzeugt haben
-        cached = get_sign_horoscope(sign, today)
+        cached = get_sign_horoscope(sign, today, lang)
         if cached["ok"] and cached["data"]:
             return {"ok": True, "data": _row_to_data(cached["data"], sign, "cached")}
 
@@ -176,14 +177,14 @@ async def sign_horoscope(sign: str) -> dict:
         user = (f"Sonnenzeichen: {sign_de}\n\nDer Himmel heute ({today}):\n{_today_sky_text()}\n\n"
                 "Schreibe nun das Tageshoroskop als JSON.")
         try:
-            raw = await _call_claude(_system(), user, max_tokens=900, model=SIGN_HOROSCOPE_MODEL)
+            raw = await _call_claude(with_lang(_system(), lang), user, max_tokens=900, model=SIGN_HOROSCOPE_MODEL)
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         parsed = _parse(raw)
         row = {
             "sign": sign, "target_date": today, "stimmung": parsed["stimmung"], "body": parsed["text"],
             "tipp": parsed["tipp"], "liebe": parsed["liebe"], "beruf": parsed["beruf"],
-            "model": SIGN_HOROSCOPE_MODEL,
+            "model": SIGN_HOROSCOPE_MODEL, "lang": lang,
         }
         saved = save_sign_horoscope(row)
         return {"ok": True, "data": _row_to_data(saved["data"] if saved.get("ok") and saved.get("data") else row, sign, "created")}
@@ -205,6 +206,18 @@ def _first_name(name: Optional[str]) -> str:
     return (first or "Jemand")[:20]
 
 
+def _sun_sign_key_of_row(row: dict) -> Optional[str]:
+    """Sprachneutraler Schluessel (z. B. "Gem") fuer die Uebersetzung in der App."""
+    chart = row.get("chart_json") or {}
+    key = ((chart.get("big_three") or {}).get("sun") or {}).get("sign")
+    if key:
+        return key
+    natal = ce.compute_natal(person_row_to_engine_person(row))
+    if natal.get("ok"):
+        return natal["data"]["big_three"]["sun"]["sign"]
+    return None
+
+
 def _sun_sign_of_row(row: dict) -> Optional[str]:
     chart = row.get("chart_json") or {}
     sun = ((chart.get("big_three") or {}).get("sun") or {}).get("sign_de")
@@ -221,7 +234,8 @@ def invite_info(code: str) -> dict:
     if not found.get("ok") or not found.get("data"):
         return {"ok": False, "error": "Diese Einladung gibt es nicht (mehr)."}
     row = found["data"]["person"]
-    return {"ok": True, "data": {"name": _first_name(row.get("name")), "sun_sign_de": _sun_sign_of_row(row)}}
+    return {"ok": True, "data": {"name": _first_name(row.get("name")), "sun_sign_de": _sun_sign_of_row(row),
+                                 "sun_sign": _sun_sign_key_of_row(row)}}
 
 
 def invite_match(code: str, year: int, month: int, day: int,
@@ -247,10 +261,12 @@ def invite_match(code: str, year: int, month: int, day: int,
     return {
         "ok": True,
         "data": {
-            "inviter": {"name": _first_name(inviter_row.get("name")), "sun_sign_de": _sun_sign_of_row(inviter_row)},
+            "inviter": {"name": _first_name(inviter_row.get("name")), "sun_sign_de": _sun_sign_of_row(inviter_row),
+                        "sun_sign": _sun_sign_key_of_row(inviter_row)},
             "you": me["data"],
             "score_percent": score_percent(score.get("value")),
             "score_label": score_label(score.get("description")),
+            "score_description": score.get("description"),
             "tone": summary.get("tone"),
             "harmonious": summary.get("harmonious", 0),
             "challenging": summary.get("challenging", 0),

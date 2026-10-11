@@ -16,6 +16,7 @@ from chat import chat_turn, update_memory
 from geocode import geocode_place
 from sky import sky_today
 import public_content
+from agents import norm_lang
 from auth_guard import require_soraya_api_key
 from auth_user import get_current_supabase_user, require_user_or_api_key
 import limits
@@ -44,7 +45,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.11")
+app = FastAPI(title="Soraya Astro Engine", version="2.12")
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +182,7 @@ class SaveAnalysisIn(BaseModel):
     person_id: str
     force_new: bool = False
     only_cached: bool = False
+    lang: Optional[str] = None
 
 
 class SaveHoroscopeIn(BaseModel):
@@ -188,12 +190,14 @@ class SaveHoroscopeIn(BaseModel):
     person_id: str
     period: str = "daily"
     at: Optional[str] = None
+    lang: Optional[str] = None
 
 
 class SaveSynastryIn(BaseModel):
     owner_id: str
     person_a_id: str
     person_b_id: str
+    lang: Optional[str] = None
 
 
 class ChatSaveIn(BaseModel):
@@ -203,6 +207,7 @@ class ChatSaveIn(BaseModel):
     conversation_id: Optional[str] = None
     memory: Optional[str] = None
     people_ids: List[str] = Field(default_factory=list)
+    lang: Optional[str] = None
 
 
 # Mobile-sichere Payloads: KEINE owner_id im Body.
@@ -219,17 +224,20 @@ class MobileSaveAnalysisIn(BaseModel):
     # Nur eine gespeicherte Analyse liefern, nie eine neue erzeugen
     # (fuer automatisches Oeffnen in der App).
     only_cached: bool = False
+    lang: Optional[str] = None
 
 
 class MobileSaveHoroscopeIn(BaseModel):
     person_id: str
     period: str = "daily"
     at: Optional[str] = None
+    lang: Optional[str] = None
 
 
 class MobileSaveSynastryIn(BaseModel):
     person_a_id: str
     person_b_id: str
+    lang: Optional[str] = None
 
 
 class MobileChatSaveIn(BaseModel):
@@ -238,6 +246,7 @@ class MobileChatSaveIn(BaseModel):
     conversation_id: Optional[str] = None
     memory: Optional[str] = None
     people_ids: List[str] = Field(default_factory=list)
+    lang: Optional[str] = None
 
 
 class MobilePersonRefIn(BaseModel):
@@ -405,7 +414,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.11",
+        "version": "2.12",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -526,6 +535,7 @@ async def mobile_analysis_save(
             person_id=payload.person_id,
             force_new=payload.force_new,
             only_cached=payload.only_cached,
+            lang=payload.lang,
         ),
         True,
     )
@@ -542,6 +552,7 @@ async def mobile_horoscope_save(
             person_id=payload.person_id,
             period=payload.period,
             at=payload.at,
+            lang=payload.lang,
         ),
         True,
     )
@@ -557,6 +568,7 @@ async def mobile_synastry_save(
             owner_id=user["id"],
             person_a_id=payload.person_a_id,
             person_b_id=payload.person_b_id,
+            lang=payload.lang,
         ),
         True,
     )
@@ -575,6 +587,7 @@ async def mobile_chat_save(
             conversation_id=payload.conversation_id,
             memory=payload.memory,
             people_ids=payload.people_ids,
+            lang=payload.lang,
         ),
         True,
     )
@@ -722,10 +735,10 @@ def public_preview(payload: PublicPreviewIn, request: Request):
 
 
 @app.get("/public/sign-horoscope")
-async def public_sign_horoscope(sign: str, request: Request):
+async def public_sign_horoscope(sign: str, request: Request, lang: str = "de"):
     """Allgemeines Tageshoroskop fuer ein Sonnenzeichen (1x pro Tag und Zeichen erzeugt)."""
     limits.reserve("ip:" + _client_ip(request), "oeffentlich")
-    result = await public_content.sign_horoscope(sign)
+    result = await public_content.sign_horoscope(sign, lang)
     if result.get("ok"):
         increment_public_usage("sign_horoscope")
     return result
@@ -855,8 +868,9 @@ async def analysis_save(
     payload: SaveAnalysisIn,
     _: bool = Depends(require_soraya_api_key),
 ):
+    lang = norm_lang(payload.lang)
     if not payload.force_new:
-        existing = get_latest_analysis(payload.owner_id, payload.person_id)
+        existing = get_latest_analysis(payload.owner_id, payload.person_id, lang)
         if not existing["ok"]:
             return existing
 
@@ -880,12 +894,12 @@ async def analysis_save(
     # Kostenbremse: nur echte Neu-Erzeugungen zaehlen, nicht der Cache oben.
     limits.reserve(payload.owner_id, "analyse")
     person = person_row_to_engine_person(person_row["data"])
-    reading = await generate_full_analysis(person)
+    reading = await generate_full_analysis(person, lang)
     if not reading["ok"]:
         limits.release(payload.owner_id, "analyse")
         return reading
 
-    saved = save_analysis(payload.owner_id, payload.person_id, reading)
+    saved = save_analysis(payload.owner_id, payload.person_id, reading, lang)
     if not saved["ok"]:
         return saved
 
@@ -916,13 +930,14 @@ async def horoscope_save(
 
     person = person_row_to_engine_person(person_row["data"])
     period = (payload.period or "daily").lower()
+    lang = norm_lang(payload.lang)
 
     # Kostenbremse: dasselbe Horoskop (heute / diese Woche / dieser Monat)
     # wird aus der Datenbank geliefert statt neu bei Claude bestellt.
     today = datetime.now(timezone.utc).date()
     if not payload.at or str(payload.at)[:10] == today.isoformat():
         since = _horoscope_cache_since(period, today).isoformat()
-        cached = get_cached_horoscope(payload.owner_id, payload.person_id, period, since)
+        cached = get_cached_horoscope(payload.owner_id, payload.person_id, period, since, lang)
         if cached["ok"] and cached["data"]:
             row = cached["data"]
             details = row.get("details") or {}
@@ -950,7 +965,7 @@ async def horoscope_save(
             }
 
     limits.reserve(payload.owner_id, "horoskop")
-    horoscope_result = await generate_horoscope(person, period, payload.at)
+    horoscope_result = await generate_horoscope(person, period, payload.at, lang)
     if not horoscope_result["ok"]:
         limits.release(payload.owner_id, "horoskop")
         return horoscope_result
@@ -1004,7 +1019,8 @@ async def synastry_save(
 
     person_a = person_row_to_engine_person(row_a["data"])
     person_b = person_row_to_engine_person(row_b["data"])
-    fingerprint = _synastry_fingerprint(row_a["data"], row_b["data"])
+    lang = norm_lang(payload.lang)
+    fingerprint = _synastry_fingerprint(row_a["data"], row_b["data"]) + "#" + lang
 
     # Kostenbremse: Gleiches Paar mit unveraenderten Geburtsdaten -> gespeicherte
     # Deutung wiederverwenden statt Claude erneut zu bezahlen.
@@ -1027,7 +1043,7 @@ async def synastry_save(
 
     # Claude-Deutung (best-effort: faellt sie aus, kommen trotzdem die Aspekte)
     reading = await generate_synastry_reading(
-        person_a.get("name"), person_b.get("name"), syn["data"]
+        person_a.get("name"), person_b.get("name"), syn["data"], lang
     )
     reading_data = reading["data"] if reading.get("ok") else {}
     if not reading.get("ok"):
@@ -1160,6 +1176,7 @@ async def chat_save(
         history,
         payload.message,
         _cap_memory(memory),
+        lang=norm_lang(payload.lang),
     )
     if not reply_result["ok"]:
         limits.release(payload.owner_id, "chat")

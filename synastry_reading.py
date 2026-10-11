@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 
-from agents import PERSONA, _call_claude
+from agents import PERSONA, _call_claude, with_lang
 
 SYNASTRY_MODEL = os.environ.get(
     "SYNASTRY_MODEL", os.environ.get("HOROSCOPE_MODEL", "claude-sonnet-4-6")
@@ -124,12 +124,12 @@ def _parse_json(raw: str) -> dict:
         return out
 
 
-async def generate_synastry_reading(name_a: str, name_b: str, syn_data: dict) -> dict:
+async def generate_synastry_reading(name_a: str, name_b: str, syn_data: dict, lang: str = "de") -> dict:
     """Claude-Deutung aus berechneten Synastrie-Daten (Result-Pattern)."""
     try:
         user_text = _aspects_to_text(name_a or "Person A", name_b or "Person B", syn_data)
         raw = await _call_claude(
-            _system(),
+            with_lang(_system(), lang),
             user_text + "\n\nSchreibe nun die Deutung als JSON.",
             max_tokens=2000,
             model=SYNASTRY_MODEL,

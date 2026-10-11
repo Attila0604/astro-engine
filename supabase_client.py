@@ -188,14 +188,15 @@ def get_person(owner_id: str, person_id: str) -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
-def get_latest_analysis(owner_id: str, person_id: str) -> dict:
-    """Liest die neueste gespeicherte Analyse, damit Claude-Kosten nicht doppelt entstehen."""
+def get_latest_analysis(owner_id: str, person_id: str, lang: str = "de") -> dict:
+    """Liest die neueste gespeicherte Analyse (in dieser Sprache), damit Claude-Kosten nicht doppelt entstehen."""
     try:
         resp = (get_supabase()
                 .table("analyses")
                 .select("*")
                 .eq("owner_id", owner_id)
                 .eq("person_id", person_id)
+                .eq("lang", lang)
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute())
@@ -205,7 +206,7 @@ def get_latest_analysis(owner_id: str, person_id: str) -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
-def save_analysis(owner_id: str, person_id: str, analysis_result: dict) -> dict:
+def save_analysis(owner_id: str, person_id: str, analysis_result: dict, lang: str = "de") -> dict:
     try:
         data = analysis_result.get("data", analysis_result)
         payload = {
@@ -214,6 +215,7 @@ def save_analysis(owner_id: str, person_id: str, analysis_result: dict) -> dict:
             "reading": data.get("reading") or "",
             "sections": data.get("sections"),
             "model": data.get("model"),
+            "lang": lang,
         }
         resp = get_supabase().table("analyses").insert(payload).execute()
         rows = _response_data(resp) or []
@@ -225,7 +227,8 @@ def save_analysis(owner_id: str, person_id: str, analysis_result: dict) -> dict:
 HOROSCOPE_DETAIL_FIELDS = ("fokus", "liebe", "beruf", "ritual", "affirmation")
 
 
-def get_cached_horoscope(owner_id: str, person_id: str, period: str, since_date: str) -> dict:
+def get_cached_horoscope(owner_id: str, person_id: str, period: str, since_date: str,
+                         lang: str = "de") -> dict:
     """
     Kostenbremse: liefert ein bereits erzeugtes Horoskop fuer denselben Zeitraum
     (daily = heute, weekly = diese Woche, monthly = dieser Monat) oder None.
@@ -238,6 +241,7 @@ def get_cached_horoscope(owner_id: str, person_id: str, period: str, since_date:
                 .eq("owner_id", owner_id)
                 .eq("person_id", person_id)
                 .eq("period", period)
+                .eq("lang", lang)
                 .gte("target_date", since_date)
                 .not_.is_("details", "null")
                 .order("target_date", desc=True)
@@ -265,10 +269,11 @@ def save_horoscope(owner_id: str, person_id: str, horoscope_result: dict,
             "model": data.get("model"),
             # Zusatzfelder, damit ein gecachtes Horoskop vollstaendig angezeigt wird.
             "details": {k: data.get(k) for k in HOROSCOPE_DETAIL_FIELDS},
+            "lang": data.get("lang") or "de",
         }
         resp = (get_supabase()
                 .table("horoscopes")
-                .upsert(payload, on_conflict="person_id,period,target_date")
+                .upsert(payload, on_conflict="person_id,period,target_date,lang")
                 .execute())
         rows = _response_data(resp) or []
         return _ok(rows[0] if rows else None)
@@ -333,7 +338,7 @@ def update_person_chart(owner_id: str, person_id: str, chart_json: dict) -> dict
         return _err(f"{type(e).__name__}: {e}")
 
 
-def get_sign_horoscope(sign: str, target_date: str) -> dict:
+def get_sign_horoscope(sign: str, target_date: str, lang: str = "de") -> dict:
     """Allgemeines Sternzeichen-Tageshoroskop (Schnellstart ohne Login)."""
     try:
         resp = (get_supabase()
@@ -341,6 +346,7 @@ def get_sign_horoscope(sign: str, target_date: str) -> dict:
                 .select("*")
                 .eq("sign", sign)
                 .eq("target_date", target_date)
+                .eq("lang", lang)
                 .limit(1)
                 .execute())
         rows = _response_data(resp) or []
@@ -353,7 +359,7 @@ def save_sign_horoscope(row: dict) -> dict:
     try:
         resp = (get_supabase()
                 .table("sign_horoscopes")
-                .upsert(row, on_conflict="sign,target_date")
+                .upsert(row, on_conflict="sign,target_date,lang")
                 .execute())
         rows = _response_data(resp) or []
         return _ok(rows[0] if rows else row)
