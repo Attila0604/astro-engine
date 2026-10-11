@@ -51,8 +51,9 @@ async def _call_claude(system: str, user: str, max_tokens: int,
 # ---------------------------------------------------------------------------
 # Gemeinsame Persona
 # ---------------------------------------------------------------------------
-PERSONA = """Du bist eine erfahrene, warmherzige Astrologin, die auf Deutsch schreibt.
-Du sprichst die Person durchgehend mit "du" an -- nahbar, persoenlich, auf Augenhoehe.
+PERSONA = """Du bist eine erfahrene, warmherzige Astrologin.
+Du sprichst die Person durchgehend informell an (auf Deutsch "du") -- nahbar, persoenlich, auf Augenhoehe.
+In welcher Sprache du schreibst, steht in der SPRACHE-Anweisung am Ende.
 
 Dein Stil:
 - konkret und auf die tatsaechlichen Stellungen bezogen, nie generisch oder beliebig
@@ -67,6 +68,50 @@ Wichtige Grenzen:
 - Astrologie ist hier ein Werkzeug zur Selbstreflexion und Unterhaltung, kein Schicksalsspruch.
 
 Erfinde niemals Planetenstellungen -- nutze ausschliesslich die dir gegebenen Daten."""
+
+# ---------------------------------------------------------------------------
+# Sprachen: die App gibt lang = de | en | hu | it mit. Die Anweisung kommt ans
+# Ende jedes System-Prompts und hat damit Vorrang.
+# ---------------------------------------------------------------------------
+LANGS = ("de", "en", "hu", "it")
+
+LANG_DIRECTIVES = {
+    "de": ("\n\nSPRACHE: Schreibe die gesamte Antwort auf Deutsch und sprich die Person mit \"du\" an. "
+           "JSON-Schluessel bleiben exakt wie vorgegeben."),
+    "en": ("\n\nLANGUAGE: Write your ENTIRE answer in natural, warm English and address the person "
+           "informally as \"you\". Use the usual English astrological terms (e.g. Leo, Moon, Ascendant, "
+           "trine, square). Translate headings too. Keep any JSON keys exactly as specified."),
+    "hu": ("\n\nNYELV: A TELJES választ természetes, meleg magyar nyelven írd, tegeződve. "
+           "Az asztrológiai fogalmakat a megszokott magyar nevükön használd (pl. Oroszlán, Hold, "
+           "Aszcendens, trigon, kvadrát). A címsorokat is fordítsd le. A JSON-kulcsokat pontosan "
+           "a megadott formában hagyd."),
+    "it": ("\n\nLINGUA: Scrivi TUTTA la risposta in un italiano naturale e caloroso, dando del tu. "
+           "Usa i nomi italiani consueti dei termini astrologici (es. Leone, Luna, Ascendente, "
+           "trigono, quadratura). Traduci anche i titoli. Lascia le chiavi JSON esattamente come indicate."),
+}
+
+# Hilfe in Krisen -- passend zur Sprache bzw. den wahrscheinlichen Laendern
+CRISIS_LINES = {
+    "de": ("in Oesterreich Telefonseelsorge 142 (rund um die Uhr, kostenlos), in Deutschland "
+           "Telefonseelsorge 0800 111 0 111, in der Schweiz Die Dargebotene Hand 143, "
+           "bei akuter Gefahr den Notruf 112"),
+    "en": ("in the UK and Ireland Samaritans 116 123, in the US the 988 Suicide & Crisis Lifeline, "
+           "in an emergency the local emergency number (112 in Europe, 999 in the UK, 911 in the US)"),
+    "hu": ("Magyarországon a Lelki Elsősegély Telefonszolgálat 116 123 (ingyenes, éjjel-nappal), "
+           "közvetlen veszély esetén a 112-es segélyhívó"),
+    "it": ("in Italia Telefono Amico 02 2327 2327 oppure Samaritans Onlus 06 77208977, "
+           "in caso di pericolo immediato il numero di emergenza 112"),
+}
+
+
+def norm_lang(lang) -> str:
+    lang = (lang or "de").lower()[:2]
+    return lang if lang in LANGS else "de"
+
+
+def with_lang(system: str, lang) -> str:
+    return system + LANG_DIRECTIVES[norm_lang(lang)]
+
 
 # ---------------------------------------------------------------------------
 # Domaenen-Agenten

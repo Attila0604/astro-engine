@@ -26,7 +26,7 @@ import json
 import os
 
 import chart_engine as ce
-from agents import PERSONA, _call_claude, _closeness
+from agents import PERSONA, _call_claude, _closeness, norm_lang, with_lang
 
 # Eigenes Modell -- guenstiger Default fuer das (spaeter taegliche, hochvolumige)
 # Horoskop. Per ENV auf z.B. claude-sonnet-4-6 hochschaltbar fuer mehr Waerme.
@@ -146,7 +146,7 @@ def _parse_json(raw: str) -> dict:
         return out
 
 
-async def generate_horoscope(person: dict, period: str = "daily", at=None) -> dict:
+async def generate_horoscope(person: dict, period: str = "daily", at=None, lang: str = "de") -> dict:
     """Tages-/Wochen-/Monatshoroskop fuer eine Person."""
     period = (period or "daily").lower()
     if period not in PERIODS:
@@ -164,7 +164,7 @@ async def generate_horoscope(person: dict, period: str = "daily", at=None) -> di
     text = _transits_to_text(natal_res["data"], tr_res["data"], selected, period)
 
     try:
-        raw = await _call_claude(_system(period), text + "\n\nSchreibe nun das Horoskop als JSON.",
+        raw = await _call_claude(with_lang(_system(period), lang), text + "\n\nSchreibe nun das Horoskop als JSON.",
                                  max_tokens=2400, model=HOROSCOPE_MODEL)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -174,6 +174,7 @@ async def generate_horoscope(person: dict, period: str = "daily", at=None) -> di
         "ok": True,
         "data": {
             "period": period,
+            "lang": norm_lang(lang),
             "at_utc": tr_res["data"]["meta"]["at_utc"],
             **parsed,
             "model": HOROSCOPE_MODEL,

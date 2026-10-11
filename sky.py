@@ -32,14 +32,14 @@ _SIGN_KEYS = ["Ari", "Tau", "Gem", "Can", "Leo", "Vir",
 
 # Planeten, deren Ruecklaeufigkeit fuer Nutzer interessant ist
 _RETRO_PLANETS = [
-    (swe.MERCURY, "Merkur"),
-    (swe.VENUS, "Venus"),
-    (swe.MARS, "Mars"),
-    (swe.JUPITER, "Jupiter"),
-    (swe.SATURN, "Saturn"),
-    (swe.URANUS, "Uranus"),
-    (swe.NEPTUNE, "Neptun"),
-    (swe.PLUTO, "Pluto"),
+    (swe.MERCURY, "Merkur", "Mercury"),
+    (swe.VENUS, "Venus", "Venus"),
+    (swe.MARS, "Mars", "Mars"),
+    (swe.JUPITER, "Jupiter", "Jupiter"),
+    (swe.SATURN, "Saturn", "Saturn"),
+    (swe.URANUS, "Uranus", "Uranus"),
+    (swe.NEPTUNE, "Neptun", "Neptune"),
+    (swe.PLUTO, "Pluto", "Pluto"),
 ]
 
 _PHASES = [
@@ -75,6 +75,10 @@ def _lon(jd: float, body: int) -> float:
 
 def _speed(jd: float, body: int) -> float:
     return swe.calc_ut(jd, body)[0][3]
+
+
+def _sign_key(lon: float) -> str:
+    return _SIGN_KEYS[int(lon // 30) % 12]
 
 
 def _sign_de(lon: float) -> str:
@@ -129,24 +133,27 @@ def _compute(now: datetime) -> dict:
     age = elong / 360.0 * _SYNODIC
     illum = round((1 - math.cos(math.radians(elong))) / 2 * 100)
     phase_name, phase_text = _PHASES[-1][1], _PHASES[-1][2]
-    for limit, name, text in _PHASES:
+    phase_index = len(_PHASES) - 1
+    for idx, (limit, name, text) in enumerate(_PHASES):
         if age < limit:
             phase_name, phase_text = name, text
+            phase_index = idx
             break
 
     retrograde = []
     upcoming = []
-    for body, name in _RETRO_PLANETS:
+    for body, name, key in _RETRO_PLANETS:
         if _speed(jd, body) < 0:
             until = _station(jd, body, want_direct=True, max_days=220)
             retrograde.append({
                 "planet": name,
+                "key": key,
                 "until": until.date().isoformat() if until else None,
             })
         else:
             starts = _station(jd, body, want_direct=False, max_days=14)
             if starts:
-                upcoming.append({"planet": name, "from": starts.date().isoformat()})
+                upcoming.append({"planet": name, "key": key, "from": starts.date().isoformat()})
 
     new_moon = _next_lunation(jd, 0.0)
     full_moon = _next_lunation(jd, 180.0)
@@ -155,11 +162,13 @@ def _compute(now: datetime) -> dict:
         "at_utc": now.astimezone(timezone.utc).isoformat(timespec="minutes"),
         "moon": {
             "phase": phase_name,
+            "phase_index": phase_index,
             "phase_text": phase_text,
             "illumination": illum,
             "sign_de": _sign_de(moon),
+            "sign": _sign_key(moon),
         },
-        "sun": {"sign_de": _sign_de(sun)},
+        "sun": {"sign_de": _sign_de(sun), "sign": _sign_key(sun)},
         "retrograde": retrograde,
         "retrograde_soon": upcoming,
         "next_new_moon": new_moon.isoformat(timespec="minutes"),

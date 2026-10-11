@@ -27,7 +27,7 @@ import os
 from datetime import datetime, timezone
 
 import chart_engine as ce
-from agents import PERSONA, _call_claude, _get_client, chart_to_text
+from agents import CRISIS_LINES, PERSONA, _call_claude, _get_client, chart_to_text, norm_lang, with_lang
 
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "claude-sonnet-4-6")
 
@@ -121,7 +121,8 @@ def _exec_tool(name: str, args: dict, user_person: dict, people: list) -> dict:
     return {"ok": False, "error": f"Unbekanntes Tool: {name}"}
 
 
-def _system(user_person: dict, natal_text: str, people: list, memory: str | None) -> str:
+def _system(user_person: dict, natal_text: str, people: list, memory: str | None,
+            lang: str = "de") -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     known = ", ".join(p.get("name", "?") for p in people) or "(keine)"
     parts = [
@@ -133,9 +134,8 @@ def _system(user_person: dict, natal_text: str, people: list, memory: str | None
         "Selbstverletzung, Gewalt, einem medizinischen Notfall oder einer akuten seelischen Krise "
         "schreibt, deute das NICHT astrologisch. Reagiere mitfuehlend und ernst, sag klar, dass du "
         "als Astrologie-App keine Hilfe in Krisen ersetzen kannst, und ermutige ihn, sich sofort "
-        "Unterstuetzung zu holen: in Oesterreich Telefonseelsorge 142 (rund um die Uhr, kostenlos), "
-        "in Deutschland Telefonseelsorge 0800 111 0 111, in der Schweiz Die Dargebotene Hand 143, "
-        "bei akuter Gefahr den Notruf 112. Ermutige ihn auch, sich an eine vertraute Person zu wenden.",
+        f"Unterstuetzung zu holen: {CRISIS_LINES[norm_lang(lang)]}. "
+        "Ermutige ihn auch, sich an eine vertraute Person zu wenden.",
         f"\nHeutiges Datum: {today}.",
         f"\nDas Geburtshoroskop des Nutzers ({user_person.get('name')}):\n{natal_text}",
         f"\nHinterlegte weitere Personen (fuer Synastrie/Vergleich): {known}.",
@@ -147,7 +147,7 @@ def _system(user_person: dict, natal_text: str, people: list, memory: str | None
     ]
     if memory:
         parts.append(f"\nWas du aus frueheren Gespraechen weisst:\n{memory}")
-    return "\n".join(parts)
+    return with_lang("\n".join(parts), lang)
 
 
 def _block_to_dict(b) -> dict:
@@ -159,7 +159,7 @@ def _block_to_dict(b) -> dict:
 
 
 async def chat_turn(person: dict, people: list, history: list, message: str,
-                    memory: str | None = None, max_iters: int = 6) -> dict:
+                    memory: str | None = None, max_iters: int = 6, lang: str = "de") -> dict:
     """Eine Gespraechsrunde mit Tool-Nutzung. Gibt Antwort + bereinigte Historie zurueck."""
     natal_res = ce.compute_natal(person)
     if not natal_res["ok"]:
@@ -168,7 +168,7 @@ async def chat_turn(person: dict, people: list, history: list, message: str,
 
     try:
         client = _get_client()
-        system = _system(person, natal_text, people, memory)
+        system = _system(person, natal_text, people, memory, lang)
         # bereinigte Eingangshistorie (nur text-Turns) + neue Nutzer-Nachricht
         working = [{"role": m["role"], "content": m["content"]} for m in history]
         working.append({"role": "user", "content": message})
