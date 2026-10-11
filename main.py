@@ -33,6 +33,9 @@ from supabase_client import (
     get_synastry,
     update_person_chart,
     increment_public_usage,
+    get_self_person,
+    get_invite_for_owner,
+    create_invite,
     create_conversation,
     save_message,
     get_conversation_messages,
@@ -41,7 +44,7 @@ from supabase_client import (
     delete_account,
 )
 
-app = FastAPI(title="Soraya Astro Engine", version="2.10")
+app = FastAPI(title="Soraya Astro Engine", version="2.11")
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +405,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.10",
+        "version": "2.11",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -420,6 +423,9 @@ def health():
             "/public/preview",
             "/public/sign-horoscope",
             "/public/event",
+            "/public/invite/{code}",
+            "/public/invite/{code}/match",
+            "/mobile/invite/create",
             "/chart",
             "/people/create",
             "/analysis/save",
@@ -722,6 +728,65 @@ async def public_sign_horoscope(sign: str, request: Request):
     result = await public_content.sign_horoscope(sign)
     if result.get("ok"):
         increment_public_usage("sign_horoscope")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Partner-Einladung
+# ---------------------------------------------------------------------------
+APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "https://app.sorayaluxuryastroguide.com").rstrip("/")
+
+
+def _new_invite_code() -> str:
+    import secrets
+    return secrets.token_urlsafe(8).replace("-", "x").replace("_", "y")[:10]
+
+
+@app.post("/mobile/invite/create")
+def mobile_invite_create(user: dict = Depends(get_current_supabase_user)):
+    """Einladungslink zum eigenen Profil (wird wiederverwendet)."""
+    me = get_self_person(user["id"])
+    if not me["ok"]:
+        return me
+    if not me["data"]:
+        return {"ok": False, "error": "Bitte zuerst dein Profil speichern."}
+    person_id = me["data"]["id"]
+    existing = get_invite_for_owner(user["id"], person_id)
+    if existing["ok"] and existing["data"]:
+        code = existing["data"]["code"]
+    else:
+        code = _new_invite_code()
+        created = create_invite(user["id"], person_id, code)
+        if not created["ok"]:
+            return created
+    return {"ok": True, "data": {"code": code, "url": f"{APP_PUBLIC_URL}/?einladung={code}"}}
+
+
+class InviteMatchIn(BaseModel):
+    year: int
+    month: int
+    day: int
+    hour: Optional[int] = None
+    minute: Optional[int] = None
+
+
+@app.get("/public/invite/{code}")
+def public_invite(code: str, request: Request):
+    """Wer laedt ein? Nur Vorname und Sonnenzeichen."""
+    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
+    result = public_content.invite_info(code)
+    if result.get("ok"):
+        increment_public_usage("invite_open")
+    return result
+
+
+@app.post("/public/invite/{code}/match")
+def public_invite_match(code: str, payload: InviteMatchIn, request: Request):
+    """Gemeinsames Ergebnis in Prozent (ohne Claude, nichts gespeichert)."""
+    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
+    result = public_content.invite_match(code, payload.year, payload.month, payload.day, payload.hour, payload.minute)
+    if result.get("ok"):
+        increment_public_usage("invite_match")
     return result
 
 
