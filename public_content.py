@@ -187,3 +187,72 @@ async def sign_horoscope(sign: str) -> dict:
         }
         saved = save_sign_horoscope(row)
         return {"ok": True, "data": _row_to_data(saved["data"] if saved.get("ok") and saved.get("data") else row, sign, "created")}
+
+
+# ---------------------------------------------------------------------------
+# Partner-Einladung: Die eingeladene Person sieht nur Vorname und Sonnen-
+# zeichen der einladenden Person und das gemeinsame Ergebnis -- nie deren
+# Geburtsdaten. Gerechnet wird ausschliesslich hier im Backend.
+# ---------------------------------------------------------------------------
+from supabase_client import get_invite_with_person, increment_invite_uses, person_row_to_engine_person  # noqa: E402
+from synastry_reading import score_label, score_percent  # noqa: E402
+
+_OLD = {"Loewe": "Löwe", "Schuetze": "Schütze"}
+
+
+def _first_name(name: Optional[str]) -> str:
+    first = (name or "").strip().split(" ")[0] if name else ""
+    return (first or "Jemand")[:20]
+
+
+def _sun_sign_of_row(row: dict) -> Optional[str]:
+    chart = row.get("chart_json") or {}
+    sun = ((chart.get("big_three") or {}).get("sun") or {}).get("sign_de")
+    if sun:
+        return _OLD.get(sun, sun)
+    natal = ce.compute_natal(person_row_to_engine_person(row))
+    if natal.get("ok"):
+        return natal["data"]["big_three"]["sun"]["sign_de"]
+    return None
+
+
+def invite_info(code: str) -> dict:
+    found = get_invite_with_person(code)
+    if not found.get("ok") or not found.get("data"):
+        return {"ok": False, "error": "Diese Einladung gibt es nicht (mehr)."}
+    row = found["data"]["person"]
+    return {"ok": True, "data": {"name": _first_name(row.get("name")), "sun_sign_de": _sun_sign_of_row(row)}}
+
+
+def invite_match(code: str, year: int, month: int, day: int,
+                 hour: Optional[int] = None, minute: Optional[int] = None) -> dict:
+    found = get_invite_with_person(code)
+    if not found.get("ok") or not found.get("data"):
+        return {"ok": False, "error": "Diese Einladung gibt es nicht (mehr)."}
+    me = preview(year, month, day, hour, minute)
+    if not me.get("ok"):
+        return me
+
+    inviter_row = found["data"]["person"]
+    inviter = person_row_to_engine_person(inviter_row)
+    guest = {"name": "Du", "year": int(year), "month": int(month), "day": int(day),
+             "hour": hour, "minute": minute, **_DEFAULT_PLACE}
+    syn = ce.compute_synastry(inviter, guest)
+    if not syn.get("ok"):
+        return syn
+    score = syn["data"].get("score") or {}
+    summary = syn["data"].get("summary") or {}
+    invite = found["data"]["invite"]
+    increment_invite_uses(invite["code"], invite.get("uses"))
+    return {
+        "ok": True,
+        "data": {
+            "inviter": {"name": _first_name(inviter_row.get("name")), "sun_sign_de": _sun_sign_of_row(inviter_row)},
+            "you": me["data"],
+            "score_percent": score_percent(score.get("value")),
+            "score_label": score_label(score.get("description")),
+            "tone": summary.get("tone"),
+            "harmonious": summary.get("harmonious", 0),
+            "challenging": summary.get("challenging", 0),
+        },
+    }

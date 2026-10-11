@@ -369,6 +369,78 @@ def increment_public_usage(kind: str) -> None:
         pass
 
 
+def get_self_person(owner_id: str) -> dict:
+    """Neuestes eigenes Profil (is_self) eines Nutzers oder None."""
+    try:
+        resp = (get_supabase()
+                .table("people")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("is_self", True)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def get_invite_for_owner(owner_id: str, person_id: str) -> dict:
+    try:
+        resp = (get_supabase()
+                .table("invites")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .eq("person_id", person_id)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def create_invite(owner_id: str, person_id: str, code: str) -> dict:
+    try:
+        resp = (get_supabase()
+                .table("invites")
+                .insert({"code": code, "owner_id": owner_id, "person_id": person_id})
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else {"code": code})
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def get_invite_with_person(code: str) -> dict:
+    """Einladung + Person der einladenden Nutzerin (nur fuers Backend)."""
+    try:
+        resp = (get_supabase()
+                .table("invites")
+                .select("code,owner_id,person_id,uses")
+                .eq("code", code)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        if not rows:
+            return _ok(None)
+        invite = rows[0]
+        person = get_person(invite["owner_id"], invite["person_id"])
+        if not person["ok"]:
+            return _ok(None)
+        return _ok({"invite": invite, "person": person["data"]})
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
+def increment_invite_uses(code: str, current: int) -> None:
+    try:
+        get_supabase().table("invites").update({"uses": int(current or 0) + 1}).eq("code", code).execute()
+    except Exception:
+        pass
+
+
 def create_conversation(owner_id: str, title: Optional[str] = None) -> dict:
     try:
         payload = {"owner_id": owner_id, "title": title or "Neue Soraya-Unterhaltung"}
