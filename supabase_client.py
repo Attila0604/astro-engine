@@ -381,9 +381,20 @@ def agent_statistik(tage: int, ignorieren: list[str]) -> dict:
         resp = get_supabase().rpc(
             "agent_statistik", {"p_tage": int(tage), "p_ignorieren": ignorieren}
         ).execute()
-        return _ok(_response_data(resp))
+        daten = _response_data(resp)
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
+    # Wirkung pro Link (eigene Funktion; fehlt sie noch, bleibt der Rest nutzbar)
+    try:
+        quellen = get_supabase().rpc(
+            "agent_quellen", {"p_tage": int(tage), "p_ignorieren": ignorieren}
+        ).execute()
+        quellen = _response_data(quellen)
+    except Exception:
+        quellen = {}
+    if isinstance(daten, dict):
+        daten = {**daten, "quellen": quellen if isinstance(quellen, dict) else {}}
+    return _ok(daten)
 
 
 def get_self_person(owner_id: str) -> dict:

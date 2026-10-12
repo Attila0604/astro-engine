@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -416,7 +417,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.14",
+        "version": "2.15",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -807,20 +808,31 @@ def public_invite_match(code: str, payload: InviteMatchIn, request: Request):
 
 
 # Nur diese anonymen Ereignisse darf die App melden (reiner Zaehler).
-PUBLIC_EVENTS = {"register_click", "quickstart_open"}
+PUBLIC_EVENTS = {"register_click", "quickstart_open", "besuch", "store_klick"}
+# Nur mit Link-Kennung sinnvoll (der allgemeine Zaehler entsteht schon an anderer Stelle).
+NUR_MIT_QUELLE = {"schnellstart"}
+QUELLE_MUSTER = re.compile(r"[a-z0-9-]{2,32}")
 
 
 class PublicEventIn(BaseModel):
     kind: str
+    q: Optional[str] = None  # Link-Kennung, z. B. "p123" (Post) oder "bio-ig"
 
 
 @app.post("/public/event")
 def public_event(payload: PublicEventIn, request: Request):
-    """Anonymer Zaehler fuer Schnellstart-Ereignisse (keine Personendaten)."""
-    if payload.kind not in PUBLIC_EVENTS:
+    """Anonymer Zaehler fuer Schnellstart-Ereignisse (keine Personendaten).
+    Mit q zusaetzlich pro Link gezaehlt ("q:<kennung>:<ereignis>"), fuer "Wirkung pro Post"."""
+    q = (payload.q or "").strip().lower() or None
+    if q and not QUELLE_MUSTER.fullmatch(q):
+        q = None
+    if payload.kind not in PUBLIC_EVENTS and not (payload.kind in NUR_MIT_QUELLE and q):
         return {"ok": False, "error": "Unbekanntes Ereignis."}
     limits.reserve("ip:" + _client_ip(request), "oeffentlich")
-    increment_public_usage(payload.kind)
+    if payload.kind in PUBLIC_EVENTS:
+        increment_public_usage(payload.kind)
+    if q:
+        increment_public_usage(f"q:{q}:{payload.kind}")
     return {"ok": True}
 
 
