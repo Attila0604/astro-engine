@@ -153,7 +153,8 @@ def _parse_json(raw: str) -> dict:
         return out
 
 
-async def generate_synastry_reading(name_a: str, name_b: str, syn_data: dict, lang: str = "de") -> dict:
+async def generate_synastry_reading(name_a: str, name_b: str, syn_data: dict, lang: str = "de",
+                                    fortschritt=None) -> dict:
     """Claude-Deutung aus berechneten Synastrie-Daten (Result-Pattern)."""
     try:
         user_text = _aspects_to_text(name_a or "Person A", name_b or "Person B", syn_data, lang)
@@ -167,6 +168,8 @@ async def generate_synastry_reading(name_a: str, name_b: str, syn_data: dict, la
         )
         parsed = _parse_json(raw)
         # en/hu/it: Sprach-Lektorat ueber alle Felder + deutsche Namen absichern
+        if fortschritt and norm_lang(lang) != "de":
+            fortschritt("pruefen")
         parsed = await lektorat(parsed, lang, immer=True)
         return {"ok": True, "data": {**parsed, "model": SYNASTRY_MODEL}}
     except Exception as e:
