@@ -98,8 +98,14 @@ def _synthesis_user(chart_text: str, sections: dict, lang: str = "de") -> str:
     )
 
 
-async def generate_full_analysis(person: dict, lang: str = "de") -> dict:
-    """Komplette Tiefen-Analyse fuer eine Person."""
+async def generate_full_analysis(person: dict, lang: str = "de", fortschritt=None) -> dict:
+    """Komplette Tiefen-Analyse fuer eine Person.
+    fortschritt(phase): optionaler Rueckruf fuer die Fortschrittsanzeige der App."""
+    def phase(name: str) -> None:
+        if fortschritt:
+            fortschritt(name)
+
+    phase("chart")
     natal_res = ce.compute_natal(person)
     if not natal_res["ok"]:
         return natal_res
@@ -107,13 +113,17 @@ async def generate_full_analysis(person: dict, lang: str = "de") -> dict:
 
     try:
         chart_text = chart_to_text(natal, lang=lang)
+        phase("bereiche")
         sections = await _run_domain_agents(chart_text, lang)
+        phase("verweben")
         reading = await _call_claude(
             with_lang(_synthesis_system(lang), lang),
             _synthesis_user(chart_text, sections, lang),
             max_tokens=6000,
         )
         # en/hu/it: Sprach-Lektorat (kurze Korrekturliste) + deutsche Namen absichern
+        if norm_lang(lang) != "de":
+            phase("pruefen")
         reading = (await lektorat({"reading": reading}, lang, immer=True))["reading"]
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
