@@ -22,6 +22,7 @@ from agents import norm_lang
 from auth_guard import require_soraya_api_key
 from auth_user import get_current_supabase_user, require_user_or_api_key
 import analysis_jobs
+import synastrie_jobs
 import limits
 from supabase_client import (
     db_health,
@@ -418,7 +419,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.17",
+        "version": "2.18",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -427,6 +428,8 @@ def health():
             "/mobile/analysis/save",
             "/mobile/analysis/start",
             "/mobile/analysis/status",
+            "/mobile/synastry/start",
+            "/mobile/synastry/status",
             "/mobile/horoscope/save",
             "/mobile/synastry/save",
             "/mobile/chat/save",
@@ -624,6 +627,45 @@ async def mobile_synastry_save(
         ),
         True,
     )
+
+
+class MobileSynastryStartIn(BaseModel):
+    person_a_id: str
+    person_b_id: str
+    lang: Optional[str] = None
+    nur_gespeichert: bool = False   # nur nachsehen, nie neu berechnen (nach Server-Neustart)
+
+
+@app.post("/mobile/synastry/start")
+async def mobile_synastry_start(
+    payload: MobileSynastryStartIn,
+    user: dict = Depends(get_current_supabase_user),
+):
+    """Partner-Vergleich im Hintergrund starten; gespeicherte Ergebnisse kommen sofort (status "fertig")."""
+    lang = norm_lang(payload.lang)
+    p = SaveSynastryIn(owner_id=user["id"], person_a_id=payload.person_a_id,
+                       person_b_id=payload.person_b_id, lang=lang)
+    art, wert = _synastrie_vorbereiten(p)
+    if art == "fehler":
+        return wert
+    if art == "cached":
+        return {"ok": True, "data": {"status": "fertig", "ergebnis": wert.get("data")}}
+    if payload.nur_gespeichert:
+        return {"ok": True, "data": {"status": "keiner"}}
+    return {"ok": True, "data": synastrie_jobs.starten(
+        user["id"], payload.person_a_id, payload.person_b_id, lang,
+        lambda fortschritt: _synastrie_erzeugen(p, wert, fortschritt))}
+
+
+@app.get("/mobile/synastry/status")
+def mobile_synastry_status(
+    person_a_id: str,
+    person_b_id: str,
+    lang: Optional[str] = None,
+    user: dict = Depends(get_current_supabase_user),
+):
+    st = synastrie_jobs.stand(user["id"], person_a_id, person_b_id, norm_lang(lang))
+    return {"ok": True, "data": st or {"status": "keiner"}}
 
 
 @app.post("/mobile/chat/save")
@@ -1091,19 +1133,28 @@ async def synastry_save(
     payload: SaveSynastryIn,
     _: bool = Depends(require_soraya_api_key),
 ):
+    art, wert = _synastrie_vorbereiten(payload)
+    if art != "neu":
+        return wert
+    limits.reserve(payload.owner_id, "synastrie")
+    return await _synastrie_erzeugen(payload, wert)
+
+
+def _synastrie_vorbereiten(payload: SaveSynastryIn) -> tuple:
+    """("fehler", Antwort) | ("cached", Antwort) | ("neu", Kontext) -- ohne Claude, schnell."""
     if payload.person_a_id == payload.person_b_id:
-        return {
+        return "fehler", {
             "ok": False,
             "error": "person_a_id und person_b_id muessen verschieden sein.",
         }
 
     row_a = get_person(payload.owner_id, payload.person_a_id)
     if not row_a["ok"]:
-        return row_a
+        return "fehler", row_a
 
     row_b = get_person(payload.owner_id, payload.person_b_id)
     if not row_b["ok"]:
-        return row_b
+        return "fehler", row_b
 
     person_a = person_row_to_engine_person(row_a["data"])
     person_b = person_row_to_engine_person(row_b["data"])
@@ -1117,21 +1168,29 @@ async def synastry_save(
         cached_reading = _parse_synastry_reading(existing["data"].get("reading"))
         if cached_reading and cached_reading.get("fp") == fingerprint and cached_reading.get("text"):
             row = existing["data"]
-            return _synastry_response(
+            return "cached", _synastry_response(
                 payload, person_a, person_b, row,
                 {"score": row.get("score"), "summary": row.get("summary"), "aspects": row.get("aspects")},
                 cached_reading, source="cached",
             )
+    return "neu", {"person_a": person_a, "person_b": person_b, "lang": lang, "fingerprint": fingerprint}
 
-    limits.reserve(payload.owner_id, "synastrie")
+
+async def _synastrie_erzeugen(payload: SaveSynastryIn, ctx: dict, fortschritt=None) -> dict:
+    """Berechnung + Claude-Deutung + Speichern. Das Limit ist vorher reserviert."""
+    person_a, person_b, lang, fingerprint = ctx["person_a"], ctx["person_b"], ctx["lang"], ctx["fingerprint"]
+    phase = fortschritt or (lambda _p: None)
+    phase("chart")
     syn = ce.compute_synastry(person_a, person_b)
     if not syn["ok"]:
         limits.release(payload.owner_id, "synastrie")
         return syn
 
     # Claude-Deutung (best-effort: faellt sie aus, kommen trotzdem die Aspekte)
+    phase("deutung")
+    extra = {"fortschritt": fortschritt} if fortschritt else {}
     reading = await generate_synastry_reading(
-        person_a.get("name"), person_b.get("name"), syn["data"], lang
+        person_a.get("name"), person_b.get("name"), syn["data"], lang, **extra
     )
     reading_data = reading["data"] if reading.get("ok") else {}
     if not reading.get("ok"):
@@ -1144,6 +1203,7 @@ async def synastry_save(
             ensure_ascii=False,
         )
 
+    phase("speichern")
     saved = save_synastry(
         payload.owner_id,
         payload.person_a_id,
