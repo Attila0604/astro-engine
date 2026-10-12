@@ -15,7 +15,7 @@ from horoscope import generate_horoscope
 from synastry_reading import generate_synastry_reading, score_label, score_percent
 from chat import chat_turn, update_memory
 from geocode import geocode_place
-from sky import sky_today
+from sky import sky_for_day, sky_today
 import public_content
 from agents import norm_lang
 from auth_guard import require_soraya_api_key
@@ -416,7 +416,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.13",
+        "version": "2.14",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -844,9 +844,15 @@ def internal_statistik(tage: int = 30, x_agent_token: Optional[str] = Header(def
 
 
 @app.get("/sky")
-def sky():
-    """Himmel heute (fuer alle gleich, stuendlich gecacht, kein Login noetig)."""
-    return sky_today()
+def sky(datum: Optional[date] = None):
+    """Himmel heute (fuer alle gleich, stuendlich gecacht, kein Login noetig).
+    Mit ?datum=JJJJ-MM-TT fuer einen anderen Tag (gestern bis 90 Tage voraus), z. B. zum Vorplanen."""
+    if datum is None:
+        return sky_today()
+    heute = datetime.now(timezone.utc).date()
+    if not (heute - timedelta(days=1) <= datum <= heute + timedelta(days=90)):
+        raise HTTPException(status_code=400, detail="datum: gestern bis höchstens 90 Tage voraus")
+    return sky_for_day(datum)
 
 
 # ---------------------------------------------------------------------------
