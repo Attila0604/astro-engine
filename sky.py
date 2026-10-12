@@ -176,6 +176,27 @@ def _compute(now: datetime) -> dict:
     }
 
 
+_tage_cache: dict[str, dict] = {}
+
+
+def sky_for_day(tag) -> dict:
+    """Himmel fuer einen bestimmten Tag (z. B. zum Vorplanen), Stand 06:00 UTC = 7/8 Uhr Wien.
+    Eigener kleiner Cache, damit der Stunden-Cache von heute erhalten bleibt."""
+    try:
+        key = tag.isoformat()
+        with _cache_lock:
+            if key in _tage_cache:
+                return {"ok": True, "data": _tage_cache[key]}
+        data = _compute(datetime(tag.year, tag.month, tag.day, 6, 0, tzinfo=timezone.utc))
+        with _cache_lock:
+            if len(_tage_cache) >= 120:
+                _tage_cache.clear()
+            _tage_cache[key] = data
+        return {"ok": True, "data": data}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def sky_today(now: Optional[datetime] = None) -> dict:
     """Himmel heute, pro Stunde gecacht."""
     try:
