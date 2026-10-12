@@ -1,10 +1,11 @@
 import asyncio
+import hmac
 import json
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,7 @@ from supabase_client import (
     get_synastry,
     update_person_chart,
     increment_public_usage,
+    agent_statistik,
     get_self_person,
     get_invite_for_owner,
     create_invite,
@@ -414,7 +416,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.12",
+        "version": "2.13",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -435,6 +437,7 @@ def health():
             "/public/invite/{code}",
             "/public/invite/{code}/match",
             "/mobile/invite/create",
+            "/internal/statistik",
             "/chart",
             "/people/create",
             "/analysis/save",
@@ -819,6 +822,25 @@ def public_event(payload: PublicEventIn, request: Request):
     limits.reserve("ip:" + _client_ip(request), "oeffentlich")
     increment_public_usage(payload.kind)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Statistik fuer den Soraya-Agent ("Wirkung messen")
+# Nur mit geheimem Token (Railway-Variable AGENT_STATS_TOKEN, im Agent gleich).
+# Liefert ausschliesslich zusammengezaehlte Werte pro Tag.
+# ---------------------------------------------------------------------------
+@app.get("/internal/statistik")
+def internal_statistik(tage: int = 30, x_agent_token: Optional[str] = Header(default=None)):
+    erwartet = os.environ.get("AGENT_STATS_TOKEN", "")
+    if len(erwartet) < 24:
+        raise HTTPException(
+            status_code=503,
+            detail="AGENT_STATS_TOKEN ist im Backend nicht gesetzt (mindestens 24 Zeichen).",
+        )
+    if not x_agent_token or not hmac.compare_digest(x_agent_token, erwartet):
+        raise HTTPException(status_code=401, detail="Falscher oder fehlender Agent-Token.")
+    ignorieren = [e.strip() for e in os.environ.get("STATS_IGNORIEREN", "").split(",") if e.strip()]
+    return agent_statistik(max(1, min(int(tage), 180)), ignorieren)
 
 
 @app.get("/sky")
