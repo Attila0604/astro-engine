@@ -17,11 +17,11 @@ from __future__ import annotations
 import json
 import os
 
-from agents import PERSONA, _call_claude, with_lang
+import namen
+from agents import ANALYSIS_MODEL, PERSONA, _call_claude, lektorat, norm_lang, with_lang
 
-SYNASTRY_MODEL = os.environ.get(
-    "SYNASTRY_MODEL", os.environ.get("HOROSCOPE_MODEL", "claude-sonnet-4-6")
-)
+# Partner-Deutung wie die Analyse mit dem staerkeren Modell (natuerlichere Sprache)
+SYNASTRY_MODEL = os.environ.get("SYNASTRY_MODEL") or ANALYSIS_MODEL
 
 _FIELDS = ("text", "harmonie", "spannung", "anziehung", "kommunikation")
 
@@ -57,7 +57,36 @@ def score_label(description) -> str:
     return SCORE_LABELS_DE.get(description or "", "Kosmische Verbindung")
 
 
-def _aspects_to_text(name_a: str, name_b: str, syn: dict) -> str:
+def _aspects_to_text_intl(name_a: str, name_b: str, syn: dict, lang: str) -> str:
+    """en/hu/it: neutrale englische Beschriftung, Planeten/Aspekte in der Zielsprache."""
+    lines = [f"Synastry between {name_a} (person A) and {name_b} (person B)."]
+    score = syn.get("score")
+    value = score.get("value") if isinstance(score, dict) else score
+    description = score.get("description") if isinstance(score, dict) else None
+    if isinstance(value, (int, float)):
+        lines.append(f"Compatibility: {description or 'connection'} "
+                     f"({value} points by Discepolo, about {score_percent(value)} %).")
+    summary = syn.get("summary") or {}
+    if summary:
+        lines.append(f"Overall: {summary.get('harmonious', 0)} harmonious and "
+                     f"{summary.get('challenging', 0)} challenging aspects.")
+    aspects = (syn.get("aspects") or [])[:_MAX_ASPECTS]
+    if aspects:
+        lines.append("\nThe tightest cross-aspects (tightest first):")
+        for a in aspects:
+            lines.append(
+                f"- {namen.planet(a.get('p1') or a.get('p1_de'), lang)} of {name_a} "
+                f"{namen.aspekt(a.get('type') or a.get('type_de'), lang)} "
+                f"{namen.planet(a.get('p2') or a.get('p2_de'), lang)} of {name_b} (orb {a.get('orb')})"
+            )
+    else:
+        lines.append("\n(no tight cross-aspects -- a loose, free connection)")
+    return "\n".join(lines)
+
+
+def _aspects_to_text(name_a: str, name_b: str, syn: dict, lang: str = "de") -> str:
+    if norm_lang(lang) != "de":
+        return _aspects_to_text_intl(name_a, name_b, syn, norm_lang(lang))
     lines = [f"Synastrie zwischen {name_a} (Person A) und {name_b} (Person B)."]
     # score ist ein dict {"value", "description", ...} -- frueher wurde es als
     # Zahl geprueft und kam deshalb nie bei Claude an.
@@ -127,14 +156,18 @@ def _parse_json(raw: str) -> dict:
 async def generate_synastry_reading(name_a: str, name_b: str, syn_data: dict, lang: str = "de") -> dict:
     """Claude-Deutung aus berechneten Synastrie-Daten (Result-Pattern)."""
     try:
-        user_text = _aspects_to_text(name_a or "Person A", name_b or "Person B", syn_data)
+        user_text = _aspects_to_text(name_a or "Person A", name_b or "Person B", syn_data, lang)
+        auftrag = ("\n\nSchreibe nun die Deutung als JSON." if norm_lang(lang) == "de"
+                   else "\n\nNow write the interpretation as JSON.")
         raw = await _call_claude(
             with_lang(_system(), lang),
-            user_text + "\n\nSchreibe nun die Deutung als JSON.",
+            user_text + auftrag,
             max_tokens=2000,
             model=SYNASTRY_MODEL,
         )
         parsed = _parse_json(raw)
+        # en/hu/it: Sprach-Lektorat ueber alle Felder + deutsche Namen absichern
+        parsed = await lektorat(parsed, lang, immer=True)
         return {"ok": True, "data": {**parsed, "model": SYNASTRY_MODEL}}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}

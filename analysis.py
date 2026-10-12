@@ -20,11 +20,15 @@ import chart_engine as ce
 from agents import (
     DOMAINS,
     PERSONA,
+    PERSONA_EN,
     ANALYSIS_MODEL,
     _call_claude,
     _domain_system,
     _domain_user,
     chart_to_text,
+    lektorat,
+    norm_lang,
+    titel,
     with_lang,
 )
 
@@ -32,14 +36,33 @@ from agents import (
 async def _run_domain_agents(chart_text: str, lang: str = "de") -> dict:
     """Alle Domaenen-Agenten gleichzeitig -- spart Wartezeit."""
     tasks = [
-        _call_claude(with_lang(_domain_system(d), lang), _domain_user(chart_text), max_tokens=1200)
+        _call_claude(with_lang(_domain_system(d, lang), lang), _domain_user(chart_text, lang), max_tokens=1200)
         for d in DOMAINS
     ]
     texts = await asyncio.gather(*tasks)
-    return {d["key"]: {"title": d["title"], "text": t} for d, t in zip(DOMAINS, texts)}
+    return {d["key"]: {"title": titel(d["key"], lang), "text": t} for d, t in zip(DOMAINS, texts)}
 
 
-def _synthesis_system() -> str:
+def _synthesis_system(lang: str = "de") -> str:
+    if norm_lang(lang) != "de":
+        def k(key):
+            return titel(key, lang)
+        return (
+            f"{PERSONA_EN}\n\n"
+            "Your task: you receive four finished interpretation sections (personality, love, career, growth) "
+            "and the chart data. Weave them into ONE coherent, detailed in-depth reading.\n\n"
+            "Structure:\n"
+            "- A warm, personal introduction (2-3 paragraphs) that paints the overall picture from Sun, Moon "
+            "and Ascendant and sparks curiosity.\n"
+            f"- Then the four themes with markdown headings, exactly: ## {k('persoenlichkeit')}, "
+            f"## {k('liebe')}, ## {k('karriere')}, ## {k('wachstum')}.\n"
+            f"- A short, encouraging closing (## {k('roter_faden')}) that ties the main tensions and strengths "
+            "into a coherent whole.\n\n"
+            "Important: keep the depth of the sections, but smooth the transitions and remove repetitions "
+            "between sections. Keep a continuous, warm tone. Invent nothing. This is also your chance to "
+            "polish the language: any clumsy or literally translated phrase in the sections must come out "
+            "natural and idiomatic in your version."
+        )
     return (
         f"{PERSONA}\n\n"
         "Deine Aufgabe: Du erhaeltst vier fertige Deutungs-Abschnitte (Persoenlichkeit, "
@@ -58,8 +81,14 @@ def _synthesis_system() -> str:
     )
 
 
-def _synthesis_user(chart_text: str, sections: dict) -> str:
+def _synthesis_user(chart_text: str, sections: dict, lang: str = "de") -> str:
     parts = [f"### {s['title']}\n{s['text']}" for s in sections.values()]
+    if norm_lang(lang) != "de":
+        return ("CHART DATA:\n"
+                f"{chart_text}\n\n"
+                "FOUR INTERPRETATION SECTIONS (raw material):\n\n"
+                + "\n\n".join(parts)
+                + "\n\nNow weave the complete, coherent in-depth reading.")
     return (
         "CHART-DATEN:\n"
         f"{chart_text}\n\n"
@@ -77,13 +106,15 @@ async def generate_full_analysis(person: dict, lang: str = "de") -> dict:
     natal = natal_res["data"]
 
     try:
-        chart_text = chart_to_text(natal)
+        chart_text = chart_to_text(natal, lang=lang)
         sections = await _run_domain_agents(chart_text, lang)
         reading = await _call_claude(
-            with_lang(_synthesis_system(), lang),
-            _synthesis_user(chart_text, sections),
+            with_lang(_synthesis_system(lang), lang),
+            _synthesis_user(chart_text, sections, lang),
             max_tokens=6000,
         )
+        # en/hu/it: Sprach-Lektorat (kurze Korrekturliste) + deutsche Namen absichern
+        reading = (await lektorat({"reading": reading}, lang, immer=True))["reading"]
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 

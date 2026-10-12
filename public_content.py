@@ -23,7 +23,8 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 import chart_engine as ce
-from agents import PERSONA, _call_claude, norm_lang, with_lang
+import namen
+from agents import PERSONA, _call_claude, lektorat, norm_lang, with_lang
 from sky import sky_today
 from supabase_client import get_sign_horoscope, save_sign_horoscope
 
@@ -95,8 +96,10 @@ def preview(year: int, month: int, day: int, hour: Optional[int] = None, minute:
     }
 
 
-def _today_sky_text() -> str:
-    """Planetenstaende von heute als kurzer Text fuer den Prompt."""
+def _today_sky_text(lang: str = "de") -> str:
+    """Planetenstaende von heute als kurzer Text fuer den Prompt (Namen in der Zielsprache)."""
+    if norm_lang(lang) != "de":
+        return _today_sky_text_intl(norm_lang(lang))
     now = datetime.now(timezone.utc)
     sky = ce.compute_transits({"name": "Himmel", "year": now.year, "month": now.month, "day": now.day,
                                "hour": 12, "minute": 0, **_DEFAULT_PLACE})
@@ -109,6 +112,26 @@ def _today_sky_text() -> str:
     if s.get("ok"):
         m = s["data"]["moon"]
         lines.append(f"- Mondphase: {m.get('phase')} ({m.get('illumination')} % beleuchtet)")
+    return "\n".join(lines)
+
+
+def _today_sky_text_intl(lang: str) -> str:
+    now = datetime.now(timezone.utc)
+    sky = ce.compute_transits({"name": "Himmel", "year": now.year, "month": now.month, "day": now.day,
+                               "hour": 12, "minute": 0, **_DEFAULT_PLACE})
+    lines = []
+    if sky.get("ok"):
+        for p in sky["data"]["transit_positions"]:
+            retro = " (retrograde)" if p.get("retrograde") else ""
+            lines.append(f"- {namen.planet(p.get('name'), lang)} in {namen.zeichen(p.get('sign') or p.get('sign_de'), lang)}{retro}")
+    s = sky_today()
+    if s.get("ok"):
+        m = s["data"]["moon"]
+        phasen = ["New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous", "Full Moon",
+                  "Waning Gibbous", "Last Quarter", "Waning Crescent"]
+        i = m.get("phase_index")
+        phase = phasen[i] if isinstance(i, int) and 0 <= i < 8 else "Moon phase"
+        lines.append(f"- {phase} ({m.get('illumination')} % illuminated)")
     return "\n".join(lines)
 
 
@@ -173,14 +196,17 @@ async def sign_horoscope(sign: str, lang: str = "de") -> dict:
         if cached["ok"] and cached["data"]:
             return {"ok": True, "data": _row_to_data(cached["data"], sign, "cached")}
 
-        sign_de = ce.SIGNS_DE.get(sign, sign)
-        user = (f"Sonnenzeichen: {sign_de}\n\nDer Himmel heute ({today}):\n{_today_sky_text()}\n\n"
-                "Schreibe nun das Tageshoroskop als JSON.")
+        if lang == "de":
+            user = (f"Sonnenzeichen: {ce.SIGNS_DE.get(sign, sign)}\n\nDer Himmel heute ({today}):\n{_today_sky_text()}\n\n"
+                    "Schreibe nun das Tageshoroskop als JSON.")
+        else:
+            user = (f"Sun sign: {namen.zeichen(sign, lang)}\n\nThe sky today ({today}):\n{_today_sky_text(lang)}\n\n"
+                    "Now write the daily horoscope as JSON.")
         try:
             raw = await _call_claude(with_lang(_system(), lang), user, max_tokens=900, model=SIGN_HOROSCOPE_MODEL)
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        parsed = _parse(raw)
+        parsed = await lektorat(_parse(raw), lang, immer=False)
         row = {
             "sign": sign, "target_date": today, "stimmung": parsed["stimmung"], "body": parsed["text"],
             "tipp": parsed["tipp"], "liebe": parsed["liebe"], "beruf": parsed["beruf"],
