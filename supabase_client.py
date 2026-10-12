@@ -375,6 +375,17 @@ def increment_public_usage(kind: str) -> None:
         pass
 
 
+def agent_statistik(tage: int, ignorieren: list[str]) -> dict:
+    """Zusammengezaehlte App-Zahlen fuer den Soraya-Agent (keine Personendaten)."""
+    try:
+        resp = get_supabase().rpc(
+            "agent_statistik", {"p_tage": int(tage), "p_ignorieren": ignorieren}
+        ).execute()
+        return _ok(_response_data(resp))
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
 def get_self_person(owner_id: str) -> dict:
     """Neuestes eigenes Profil (is_self) eines Nutzers oder None."""
     try:
