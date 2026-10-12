@@ -27,6 +27,7 @@ import os
 from datetime import datetime, timezone
 
 import chart_engine as ce
+import namen
 from agents import CRISIS_LINES, PERSONA, _call_claude, _get_client, chart_to_text, norm_lang, with_lang
 
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "claude-sonnet-4-6")
@@ -164,7 +165,7 @@ async def chat_turn(person: dict, people: list, history: list, message: str,
     natal_res = ce.compute_natal(person)
     if not natal_res["ok"]:
         return natal_res
-    natal_text = chart_to_text(natal_res["data"])
+    natal_text = chart_to_text(natal_res["data"], lang=lang)
 
     try:
         client = _get_client()
@@ -194,6 +195,7 @@ async def chat_turn(person: dict, people: list, history: list, message: str,
                 continue
 
             reply = "".join(b.text for b in resp.content if b.type == "text").strip()
+            reply = namen.ersetze_namen(reply, lang)  # en/hu/it: keine deutschen Zeichennamen
             clean = ([{"role": m["role"], "content": m["content"]} for m in history]
                      + [{"role": "user", "content": message},
                         {"role": "assistant", "content": reply}])

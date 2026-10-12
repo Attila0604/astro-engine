@@ -26,7 +26,8 @@ import json
 import os
 
 import chart_engine as ce
-from agents import PERSONA, _call_claude, _closeness, norm_lang, with_lang
+import namen
+from agents import PERSONA, _call_claude, _closeness, lektorat, norm_lang, with_lang
 
 # Eigenes Modell -- guenstiger Default fuer das (spaeter taegliche, hochvolumige)
 # Horoskop. Per ENV auf z.B. claude-sonnet-4-6 hochschaltbar fuer mehr Waerme.
@@ -78,7 +79,33 @@ def _select_transits(aspects: list, period: str) -> list:
     return pool[:PERIODS[period]["max_aspects"]]
 
 
-def _transits_to_text(natal: dict, transit_data: dict, selected: list, period: str) -> str:
+_SPAN_EN = {"daily": "today", "weekly": "the coming week", "monthly": "the coming month"}
+
+
+def _transits_to_text_intl(natal: dict, transit_data: dict, selected: list, period: str, lang: str) -> str:
+    """en/hu/it: neutrale englische Beschriftung, alle Namen in der Zielsprache."""
+    b3 = natal["big_three"]
+    z = lambda pt: namen.zeichen(pt.get("sign") or pt.get("sign_de"), lang)  # noqa: E731
+    lines = [f"Core axis of the person: {namen.planet('Sun', lang)} in {z(b3['sun'])}, "
+             f"{namen.planet('Moon', lang)} in {z(b3['moon'])}, {namen.planet('Ascendant', lang)} in {z(b3['ascendant'])}."]
+    if period == "daily":
+        moon = next((p for p in transit_data["transit_positions"] if p["name"] == "Moon"), None)
+        if moon:
+            lines.append(f"Today the {namen.planet('Moon', lang)} is in {z(moon)} (it colours the day).")
+    lines.append(f"\nActive transits for {_SPAN_EN[period]} (tightest first):")
+    if not selected:
+        lines.append("- (no tight transits -- a calm, quiet period without big themes)")
+    for a in selected:
+        mv = "building up" if a.get("movement") == "Applying" else "fading"
+        lines.append(f"- transiting {namen.planet(a.get('transit') or a.get('transit_de'), lang)} "
+                     f"{namen.aspekt(a.get('type') or a.get('type_de'), lang)} natal "
+                     f"{namen.planet(a.get('natal') or a.get('natal_de'), lang)} ({_closeness(a['orb'], lang)}, {mv})")
+    return "\n".join(lines)
+
+
+def _transits_to_text(natal: dict, transit_data: dict, selected: list, period: str, lang: str = "de") -> str:
+    if norm_lang(lang) != "de":
+        return _transits_to_text_intl(natal, transit_data, selected, period, norm_lang(lang))
     cfg = PERIODS[period]
     b3 = natal["big_three"]
     lines = [
@@ -161,15 +188,18 @@ async def generate_horoscope(person: dict, period: str = "daily", at=None, lang:
         return tr_res
 
     selected = _select_transits(tr_res["data"]["aspects_to_natal"], period)
-    text = _transits_to_text(natal_res["data"], tr_res["data"], selected, period)
+    text = _transits_to_text(natal_res["data"], tr_res["data"], selected, period, lang)
+    auftrag = ("\n\nSchreibe nun das Horoskop als JSON." if norm_lang(lang) == "de"
+               else "\n\nNow write the horoscope as JSON.")
 
     try:
-        raw = await _call_claude(with_lang(_system(period), lang), text + "\n\nSchreibe nun das Horoskop als JSON.",
+        raw = await _call_claude(with_lang(_system(period), lang), text + auftrag,
                                  max_tokens=2400, model=HOROSCOPE_MODEL)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    parsed = _parse_json(raw)
+    # en/hu/it: nur bei deutschen Resten ein kurzes Lektorat (Horoskope sind haeufig -> Kosten)
+    parsed = await lektorat(_parse_json(raw), lang, immer=False)
     return {
         "ok": True,
         "data": {
