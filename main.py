@@ -21,6 +21,7 @@ import public_content
 from agents import norm_lang
 from auth_guard import require_soraya_api_key
 from auth_user import get_current_supabase_user, require_user_or_api_key
+import analysis_jobs
 import limits
 from supabase_client import (
     db_health,
@@ -417,13 +418,15 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.16",
+        "version": "2.17",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
             "/mobile/people/create",
             "/mobile/people/list",
             "/mobile/analysis/save",
+            "/mobile/analysis/start",
+            "/mobile/analysis/status",
             "/mobile/horoscope/save",
             "/mobile/synastry/save",
             "/mobile/chat/save",
@@ -526,6 +529,51 @@ def mobile_people_list(user: dict = Depends(get_current_supabase_user)):
 
     people = [_safe_person_row(r) for r in rows["data"]]
     return {"ok": True, "data": {"people": people}}
+
+
+class MobileAnalysisStartIn(BaseModel):
+    person_id: str
+    force_new: bool = False
+    lang: Optional[str] = None
+
+
+@app.post("/mobile/analysis/start")
+async def mobile_analysis_start(
+    payload: MobileAnalysisStartIn,
+    user: dict = Depends(get_current_supabase_user),
+):
+    """Startet die Tiefen-Analyse im Hintergrund und antwortet sofort.
+    Ohne force_new wird eine vorhandene Analyse direkt geliefert (status "fertig")."""
+    lang = norm_lang(payload.lang)
+    if not payload.force_new:
+        existing = get_latest_analysis(user["id"], payload.person_id, lang)
+        if not existing["ok"]:
+            return existing
+        if existing["data"]:
+            return {"ok": True, "data": {"status": "fertig", "source": "cached", "analysis": existing["data"]}}
+    person_row = get_person(user["id"], payload.person_id)   # gehoert die Person diesem Konto?
+    if not person_row["ok"]:
+        return person_row
+    if not person_row.get("data"):
+        return {"ok": False, "error": "Profil nicht gefunden."}
+    return {"ok": True, "data": analysis_jobs.starten(user["id"], payload.person_id, lang)}
+
+
+@app.get("/mobile/analysis/status")
+def mobile_analysis_status(
+    person_id: str,
+    lang: Optional[str] = None,
+    user: dict = Depends(get_current_supabase_user),
+):
+    """Stand der Hintergrund-Analyse: laeuft (Phase, Sekunden), fertig (+ Analyse), fehler, keiner."""
+    lang = norm_lang(lang)
+    st = analysis_jobs.stand(user["id"], person_id, lang)
+    if not st:
+        return {"ok": True, "data": {"status": "keiner"}}
+    if st["status"] == "fertig":
+        latest = get_latest_analysis(user["id"], person_id, lang)
+        return {"ok": True, "data": {**st, "source": "created", "analysis": latest.get("data")}}
+    return {"ok": True, "data": st}
 
 
 @app.post("/mobile/analysis/save")
