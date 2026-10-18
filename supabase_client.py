@@ -6,7 +6,7 @@ Supabase-Anbindung fuer Soraya.
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from supabase import Client, create_client
@@ -394,7 +394,27 @@ def agent_statistik(tage: int, ignorieren: list[str]) -> dict:
         quellen = {}
     if isinstance(daten, dict):
         daten = {**daten, "quellen": quellen if isinstance(quellen, dict) else {}}
+        _schnellstart_ergaenzen(daten, tage)
     return _ok(daten)
+
+
+def _schnellstart_ergaenzen(daten: dict, tage: int) -> None:
+    """Gaeste ohne Konto stehen nicht in app_events -- ihre Schnellstarts zaehlt nur der anonyme
+    Tageszaehler (public_usage). Damit "Schnellstart berechnet" nicht fast immer 0 ist, kommen diese
+    Zaehler dazu: quickstart_done (App) und preview (Sonne/Mond, App und Landingpage zusammen)."""
+    try:
+        seit = (datetime.now(timezone.utc).date() - timedelta(days=int(tage))).isoformat()
+        resp = (get_supabase().table("public_usage").select("day,kind,n")
+                .in_("kind", ["quickstart_done", "preview"]).gte("day", seit).execute())
+        zaehler: dict = {}
+        for z in _response_data(resp) or []:
+            zaehler.setdefault(str(z.get("day"))[:10], {})[z.get("kind")] = int(z.get("n") or 0)
+    except Exception:
+        return
+    for t in daten.get("tage") or []:
+        z = zaehler.get(str(t.get("datum"))[:10], {})
+        t["schnellstart_berechnet"] = max(int(t.get("schnellstart_berechnet") or 0), z.get("quickstart_done", 0))
+        t["gratis_tests"] = z.get("preview", 0)
 
 
 def get_self_person(owner_id: str) -> dict:

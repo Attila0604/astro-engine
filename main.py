@@ -898,7 +898,7 @@ def public_invite_match(code: str, payload: InviteMatchIn, request: Request):
 
 
 # Nur diese anonymen Ereignisse darf die App melden (reiner Zaehler).
-PUBLIC_EVENTS = {"register_click", "quickstart_open", "besuch", "store_klick"}
+PUBLIC_EVENTS = {"register_click", "quickstart_open", "quickstart_done", "besuch", "store_klick"}
 # Nur mit Link-Kennung sinnvoll (der allgemeine Zaehler entsteht schon an anderer Stelle).
 NUR_MIT_QUELLE = {"schnellstart"}
 QUELLE_MUSTER = re.compile(r"[a-z0-9-]{2,32}")
