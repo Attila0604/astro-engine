@@ -419,7 +419,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.19",
+        "version": "2.20",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -440,6 +440,7 @@ def health():
             "/sky",
             "/public/preview",
             "/public/sign-horoscope",
+            "/public/horoskop-status",
             "/public/event",
             "/public/invite/{code}",
             "/public/invite/{code}/match",
@@ -826,6 +827,11 @@ def public_preview(payload: PublicPreviewIn, request: Request):
     if result.get("ok"):
         increment_public_usage("preview")
     return result
+
+
+@app.get("/public/horoskop-status")
+def public_horoskop_status():
+    return public_content.horoskop_status()
 
 
 @app.get("/public/sign-horoscope")

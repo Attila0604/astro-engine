@@ -237,13 +237,14 @@ def _row_to_data(row: dict, sign: str, source: str) -> dict:
 # - Nach einem Fehlschlag hoechstens ein weiterer Versuch am Tag (nach einer Pause).
 # ---------------------------------------------------------------------------
 WARTEN_SEK = float(os.environ.get("SIGN_HOROSCOPE_WARTEN", "12") or 12)
-MAX_VERSUCHE = int(os.environ.get("SIGN_HOROSCOPE_VERSUCHE", "2") or 2)
+MAX_VERSUCHE = int(os.environ.get("SIGN_HOROSCOPE_VERSUCHE", "6") or 6)
 PAUSE_NACH_FEHLER_SEK = 600
 GLEICHZEITIG = int(os.environ.get("SIGN_HOROSCOPE_GLEICHZEITIG", "4") or 4)
 
 _fertig: dict[str, dict] = {}            # "Lib:hu:2026-10-20" -> data
 _laufend: dict[str, asyncio.Task] = {}   # laufende Erzeugungen
 _versuche: dict[str, list] = {}          # key -> [anzahl, zeitpunkt_letzter_versuch]
+_fehler: dict[str, str] = {}             # key -> letzter Fehler (fuer /public/horoskop-status)
 _sem: Optional[asyncio.Semaphore] = None
 _sem_loop = None
 
@@ -258,7 +259,7 @@ def _semaphore() -> asyncio.Semaphore:
 
 
 def _aufraeumen(today: str) -> None:
-    for d in (_fertig, _versuche):
+    for d in (_fertig, _versuche, _fehler):
         for k in [k for k in d if not k.endswith(":" + today)]:
             d.pop(k, None)
 
@@ -313,6 +314,7 @@ async def _erzeugen(sign: str, lang: str, today: str, key: str) -> Optional[dict
             parsed = _parse(raw)
             if not _brauchbar(parsed):
                 print(f"[sign-horoscope] unbrauchbare Antwort {key}: {raw[:200]!r}", flush=True)
+                _fehler[key] = f"unbrauchbare Antwort: {raw[:120]!r}"
                 return None
             try:
                 geprueft = await lektorat(parsed, lang, immer=False)
@@ -323,6 +325,7 @@ async def _erzeugen(sign: str, lang: str, today: str, key: str) -> Optional[dict
                 geprueft = {k: namen.ersetze_namen(v, lang) if isinstance(v, str) else v for k, v in parsed.items()}
     except Exception as e:
         print(f"[sign-horoscope] Erzeugung fehlgeschlagen {key}: {type(e).__name__}: {e}", flush=True)
+        _fehler[key] = f"{type(e).__name__}: {str(e)[:200]}"
         return None
 
     row = {
@@ -485,3 +488,13 @@ def invite_match(code: str, year: int, month: int, day: int,
             "challenging": summary.get("challenging", 0),
         },
     }
+
+
+def horoskop_status() -> dict:
+    """Stand der Tageshoroskope heute (ohne Inhalte, ohne Geheimnisse) -- zur Fehlersuche."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    heute = lambda d: sorted(k.rsplit(":", 1)[0] for k in d if k.endswith(today))
+    return {"ok": True, "data": {"datum": today, "modell": SIGN_HOROSCOPE_MODEL, "warten_sek": WARTEN_SEK,
+            "fertig": heute(_fertig), "laeuft": heute(_laufend),
+            "versuche": {k.rsplit(":", 1)[0]: v[0] for k, v in _versuche.items() if k.endswith(today)},
+            "fehler": {k.rsplit(":", 1)[0]: v for k, v in _fehler.items() if k.endswith(today)}}}
