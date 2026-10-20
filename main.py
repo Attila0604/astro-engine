@@ -419,7 +419,7 @@ def health():
     return {
         "ok": True,
         "service": "soraya-astro-engine",
-        "version": "2.18",
+        "version": "2.19",
         "security": "mobile endpoints and /chart, /transits, /synastry use Authorization Bearer Supabase token; daily limits per user",
         "endpoints": [
             "/auth/me",
@@ -829,12 +829,26 @@ def public_preview(payload: PublicPreviewIn, request: Request):
 
 
 @app.get("/public/sign-horoscope")
-async def public_sign_horoscope(sign: str, request: Request, lang: str = "de"):
-    """Allgemeines Tageshoroskop fuer ein Sonnenzeichen (1x pro Tag und Zeichen erzeugt)."""
-    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
-    result = await public_content.sign_horoscope(sign, lang)
+async def public_sign_horoscope(request: Request, sign: str = "", lang: str = "de"):
+    """Allgemeines Tageshoroskop fuer ein Sonnenzeichen (1x pro Tag, Zeichen und Sprache erzeugt).
+    Fertige Horoskope zaehlen nicht zum IP-Limit -- nur Anfragen, die eine neue Erzeugung starten."""
+    ip = _client_ip(request)
+
+    def reserve() -> None:
+        limits.reserve("ip:" + ip, "sternzeichen_neu")
+        try:
+            limits.reserve("alle", "sternzeichen_tag")
+        except HTTPException:
+            limits.release("ip:" + ip, "sternzeichen_neu")
+            raise
+
+    try:
+        result = await public_content.sign_horoscope(sign, lang, reserve=reserve)
+    except Exception as e:  # nie HTTP 500 (die Seite erwartet immer JSON)
+        print(f"[sign-horoscope] unerwarteter Fehler: {type(e).__name__}: {e}", flush=True)
+        result = {"ok": False, "error": "Das Tageshoroskop ist gerade nicht verfügbar. Bitte später nochmal versuchen."}
     if result.get("ok"):
-        increment_public_usage("sign_horoscope")
+        await asyncio.to_thread(increment_public_usage, "sign_horoscope")
     return result
 
 
@@ -918,7 +932,7 @@ def public_event(payload: PublicEventIn, request: Request):
         q = None
     if payload.kind not in PUBLIC_EVENTS and not (payload.kind in NUR_MIT_QUELLE and q):
         return {"ok": False, "error": "Unbekanntes Ereignis."}
-    limits.reserve("ip:" + _client_ip(request), "oeffentlich")
+    limits.reserve("ip:" + _client_ip(request), "ereignis")
     if payload.kind in PUBLIC_EVENTS:
         increment_public_usage(payload.kind)
     if q:
