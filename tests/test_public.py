@@ -105,16 +105,18 @@ def test_gleichzeitige_anfragen_ein_aufruf_je_zeichen_und_sprache(db, claude):
     assert db.saves == 48
 
 
-def test_nach_fehler_hoechstens_ein_weiterer_versuch(client, db, claude, monkeypatch):
+def test_nach_fehler_begrenzte_versuche_und_status(client, db, claude, monkeypatch):
     claude.fehler = RuntimeError("overloaded")
     r = client.get(URL.format("Sco", "hu"), headers=IP)
     assert r.status_code == 200 and r.json()["ok"] is False
     client.get(URL.format("Sco", "hu"), headers=IP)        # in der Pause: kein neuer Aufruf
     assert claude.aufrufe == 1
     monkeypatch.setattr(public_content, "PAUSE_NACH_FEHLER_SEK", 0)
-    client.get(URL.format("Sco", "hu"), headers=IP)        # 2. Versuch
-    client.get(URL.format("Sco", "hu"), headers=IP)        # Versuche aufgebraucht
-    assert claude.aufrufe == 2
+    for _ in range(public_content.MAX_VERSUCHE + 2):
+        client.get(URL.format("Sco", "hu"), headers=IP)    # weitere Versuche bis zur Grenze
+    assert claude.aufrufe == public_content.MAX_VERSUCHE
+    st = client.get("/public/horoskop-status").json()["data"]
+    assert st["versuche"]["Sco:hu"] == public_content.MAX_VERSUCHE and "overloaded" in st["fehler"]["Sco:hu"]
 
 
 # --- Fehler -> sanfter Ersatz --------------------------------------------------
