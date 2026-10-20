@@ -31,7 +31,17 @@ LIMITS = {
     "berechnung": ("LIMIT_BERECHNUNG", 300, "Chart-Berechnungen"),
     "gedaechtnis": ("LIMIT_GEDAECHTNIS", 10, "Gedaechtnis-Updates"),
     # Schnellstart ohne Login, pro IP-Adresse
-    "oeffentlich": ("LIMIT_OEFFENTLICH", 60, "Vorschau-Abfragen"),
+    # Viele Handy-Nutzer teilen sich eine IP (CGNAT), daher grosszuegig.
+    "oeffentlich": ("LIMIT_OEFFENTLICH", 200, "Vorschau-Abfragen"),
+    # Anonyme Zaehler-Ereignisse (/public/event): kosten nichts, eigener Topf,
+    # damit sie Vorschau und Horoskop nicht aufbrauchen.
+    "ereignis": ("LIMIT_EREIGNIS", 500, "Ereignisse"),
+    # Sternzeichen-Tageshoroskop: Fertige Horoskope zaehlen NICHT. Nur wenn eine
+    # Anfrage ein neues Horoskop bei Claude ausloest (max. 48 am Tag moeglich, daher
+    # reicht 60 auch, wenn ein Besucher oder Googlebot als Erster alle 48 Seiten oeffnet).
+    "sternzeichen_neu": ("LIMIT_STERNZEICHEN_NEU", 60, "neue Sternzeichen-Horoskope"),
+    # Gesamtdeckel fuer alle neuen Sternzeichen-Horoskope (alle IPs zusammen)
+    "sternzeichen_tag": ("LIMIT_STERNZEICHEN_TAG", 120, "neue Sternzeichen-Horoskope (gesamt)"),
 }
 
 _lock = threading.Lock()

@@ -355,6 +355,24 @@ def get_sign_horoscope(sign: str, target_date: str, lang: str = "de") -> dict:
         return _err(f"{type(e).__name__}: {e}")
 
 
+def get_latest_sign_horoscope(sign: str, before_date: str, lang: str = "de") -> dict:
+    """Juengstes gespeichertes Sternzeichen-Horoskop VOR before_date (Ersatz, falls heute nichts klappt)."""
+    try:
+        resp = (get_supabase()
+                .table("sign_horoscopes")
+                .select("*")
+                .eq("sign", sign)
+                .eq("lang", lang)
+                .lt("target_date", before_date)
+                .order("target_date", desc=True)
+                .limit(1)
+                .execute())
+        rows = _response_data(resp) or []
+        return _ok(rows[0] if rows else None)
+    except Exception as e:
+        return _err(f"{type(e).__name__}: {e}")
+
+
 def save_sign_horoscope(row: dict) -> dict:
     try:
         resp = (get_supabase()

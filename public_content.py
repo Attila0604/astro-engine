@@ -10,8 +10,9 @@ Inhalte VOR dem Login (Schnellstart in der App).
 
 2. await sign_horoscope(sign)
    Allgemeines Tageshoroskop fuer ein Sonnenzeichen, passend zum echten
-   Himmel von heute. Wird pro Zeichen und Tag nur EINMAL bei Claude erzeugt
-   und dann aus der Tabelle sign_horoscopes geliefert (max. 12 Aufrufe/Tag).
+   Himmel von heute. Wird pro Zeichen, Sprache und Tag nur EINMAL bei Claude
+   erzeugt und dann aus der Tabelle sign_horoscopes (und dem Speicher) geliefert
+   (max. 12 Zeichen x 4 Sprachen = 48 Erzeugungen/Tag).
 """
 
 from __future__ import annotations
@@ -19,23 +20,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import time
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 import chart_engine as ce
 import namen
 from agents import PERSONA, _call_claude, lektorat, norm_lang, with_lang
 from sky import sky_today
-from supabase_client import get_sign_horoscope, save_sign_horoscope
+from supabase_client import get_latest_sign_horoscope, get_sign_horoscope, save_sign_horoscope
 
 SIGN_KEYS = ["Ari", "Tau", "Gem", "Can", "Leo", "Vir", "Lib", "Sco", "Sag", "Cap", "Aqu", "Pis"]
 SIGN_HOROSCOPE_MODEL = os.environ.get("SIGN_HOROSCOPE_MODEL", os.environ.get("HOROSCOPE_MODEL", "claude-sonnet-4-6"))
 
 # Standardort fuer den Schnellstart (keine Ortseingabe, kein Geocoding)
 _DEFAULT_PLACE = {"lat": 48.2082, "lng": 16.3738, "tz_str": "Europe/Vienna"}
-
-_locks: dict[str, asyncio.Lock] = {}
-
 
 def _point_info(pt: dict) -> dict:
     return {
@@ -154,15 +154,63 @@ def _system() -> str:
     )
 
 
+_KEYS = ("stimmung", "text", "tipp", "liebe", "beruf")
+
+
+def _als_text(wert) -> Optional[str]:
+    """Claude liefert manchmal Listen (z. B. Absaetze) statt Text -> immer Text oder None."""
+    if wert is None:
+        return None
+    if isinstance(wert, list):
+        wert = "\n\n".join(str(x).strip() for x in wert if x is not None and str(x).strip())
+    elif not isinstance(wert, str):
+        wert = str(wert)
+    wert = wert.strip()
+    return wert or None
+
+
+def _bis_satzende(text: str) -> str:
+    """Abgeschnittenen Text (Antwort zu lang) am letzten Satzende kappen."""
+    ende = max(text.rfind(z) for z in ".!?…")
+    return text[: ende + 1] if ende >= 20 else text
+
+
+_FELD_MUSTER = {k: re.compile(r'"' + k + r'"\s*:\s*"((?:[^"\\]|\\.)*)("?)', re.S) for k in _KEYS}
+
+
 def _parse(raw: str) -> dict:
-    keys = ("stimmung", "text", "tipp", "liebe", "beruf")
+    out = {k: None for k in _KEYS}
+    raw = (raw or "").strip()
+    if not raw:
+        return out
     try:
         obj = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-        return {k: obj.get(k) for k in keys}
+        if isinstance(obj, dict):
+            return {k: _als_text(obj.get(k)) for k in _KEYS}
     except Exception:
-        out = {k: None for k in keys}
-        out["text"] = raw.strip()
+        pass
+    if "{" in raw:
+        # Kaputtes oder abgeschnittenes JSON: Felder einzeln retten, nie rohes JSON zeigen
+        for k, muster in _FELD_MUSTER.items():
+            m = muster.search(raw)
+            if not m:
+                continue
+            try:
+                wert = json.loads('"' + m.group(1) + '"')
+            except Exception:
+                wert = m.group(1).replace('\\"', '"').replace("\\n", "\n")
+            wert = _als_text(wert)
+            if wert and not m.group(2):   # ohne schliessendes Anfuehrungszeichen = abgeschnitten
+                wert = _bis_satzende(wert)
+            out[k] = wert
         return out
+    out["text"] = raw
+    return out
+
+
+def _brauchbar(parsed: dict) -> bool:
+    text = parsed.get("text")
+    return isinstance(text, str) and len(text.strip()) >= 20
 
 
 def _row_to_data(row: dict, sign: str, source: str) -> dict:
@@ -179,41 +227,180 @@ def _row_to_data(row: dict, sign: str, source: str) -> dict:
     }
 
 
-async def sign_horoscope(sign: str, lang: str = "de") -> dict:
-    if sign not in SIGN_KEYS:
+# ---------------------------------------------------------------------------
+# Sternzeichen-Tageshoroskop: robust und sparsam
+# - Fertige Horoskope liegen zusaetzlich im Speicher (kein DB-Zugriff, kein Limit).
+# - Pro Zeichen+Sprache+Tag laeuft hoechstens EINE Erzeugung gleichzeitig; alle
+#   anderen Anfragen warten auf dieselbe (kein doppelter Claude-Aufruf).
+# - Klappt die Erzeugung nicht (Claude-Fehler, kaputte Antwort) oder dauert sie
+#   zu lange, wird das letzte gespeicherte Horoskop dieses Zeichens geliefert.
+# - Nach einem Fehlschlag hoechstens ein weiterer Versuch am Tag (nach einer Pause).
+# ---------------------------------------------------------------------------
+WARTEN_SEK = float(os.environ.get("SIGN_HOROSCOPE_WARTEN", "12") or 12)
+MAX_VERSUCHE = int(os.environ.get("SIGN_HOROSCOPE_VERSUCHE", "2") or 2)
+PAUSE_NACH_FEHLER_SEK = 600
+GLEICHZEITIG = int(os.environ.get("SIGN_HOROSCOPE_GLEICHZEITIG", "4") or 4)
+
+_fertig: dict[str, dict] = {}            # "Lib:hu:2026-10-20" -> data
+_laufend: dict[str, asyncio.Task] = {}   # laufende Erzeugungen
+_versuche: dict[str, list] = {}          # key -> [anzahl, zeitpunkt_letzter_versuch]
+_sem: Optional[asyncio.Semaphore] = None
+_sem_loop = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    """Begrenzt gleichzeitige Claude-Aufrufe (z. B. wenn morgens viele Seiten zugleich laden)."""
+    global _sem, _sem_loop
+    loop = asyncio.get_running_loop()
+    if _sem is None or _sem_loop is not loop:
+        _sem, _sem_loop = asyncio.Semaphore(max(1, GLEICHZEITIG)), loop
+    return _sem
+
+
+def _aufraeumen(today: str) -> None:
+    for d in (_fertig, _versuche):
+        for k in [k for k in d if not k.endswith(":" + today)]:
+            d.pop(k, None)
+
+
+def reset_cache() -> None:
+    """Nur fuer Tests."""
+    global _sem, _sem_loop
+    _fertig.clear()
+    _laufend.clear()
+    _versuche.clear()
+    _sem = _sem_loop = None
+
+
+def _norm_sign(sign) -> Optional[str]:
+    s = (sign or "").strip()
+    for k in SIGN_KEYS:
+        if k.lower() == s.lower():
+            return k
+    return None
+
+
+async def _ersatz(sign: str, lang: str, today: str) -> Optional[dict]:
+    """Letztes gespeichertes Horoskop (z. B. von gestern) fuer dieses Zeichen und diese Sprache."""
+    try:
+        alt = await asyncio.to_thread(get_latest_sign_horoscope, sign, today, lang)
+    except Exception:
+        return None
+    if alt.get("ok") and alt.get("data") and alt["data"].get("body"):
+        return _row_to_data(alt["data"], sign, "fallback")
+    return None
+
+
+async def _erzeugen(sign: str, lang: str, today: str, key: str) -> Optional[dict]:
+    """Ein neues Horoskop bei Claude. Gibt None zurueck, wenn es nicht geklappt hat (wirft nie)."""
+    eintrag = _versuche.setdefault(key, [0, 0.0])
+    eintrag[0] += 1
+    eintrag[1] = time.monotonic()
+    try:
+        async with _semaphore():
+            if lang == "de":
+                himmel = await asyncio.to_thread(_today_sky_text)
+                user = (f"Sonnenzeichen: {ce.SIGNS_DE.get(sign, sign)}\n\nDer Himmel heute ({today}):\n{himmel}\n\n"
+                        "Schreibe nun das Tageshoroskop als JSON.")
+            else:
+                himmel = await asyncio.to_thread(_today_sky_text, lang)
+                user = (f"Sun sign: {namen.zeichen(sign, lang)}\n\nThe sky today ({today}):\n{himmel}\n\n"
+                        "Now write the daily horoscope as JSON.")
+            # Ungarisch/Italienisch brauchen mehr Tokens -- abgeschnittenes JSON vermeiden
+            max_tokens = 900 if lang == "de" else 1500
+            raw = await _call_claude(with_lang(_system(), lang), user, max_tokens=max_tokens,
+                                     model=SIGN_HOROSCOPE_MODEL)
+            parsed = _parse(raw)
+            if not _brauchbar(parsed):
+                print(f"[sign-horoscope] unbrauchbare Antwort {key}: {raw[:200]!r}", flush=True)
+                return None
+            try:
+                geprueft = await lektorat(parsed, lang, immer=False)
+                if not _brauchbar(geprueft):
+                    geprueft = parsed
+            except Exception as e:  # Lektorat ist nur Feinschliff -- nie daran scheitern
+                print(f"[sign-horoscope] Lektorat-Fehler {key}: {type(e).__name__}: {e}", flush=True)
+                geprueft = {k: namen.ersetze_namen(v, lang) if isinstance(v, str) else v for k, v in parsed.items()}
+    except Exception as e:
+        print(f"[sign-horoscope] Erzeugung fehlgeschlagen {key}: {type(e).__name__}: {e}", flush=True)
+        return None
+
+    row = {
+        "sign": sign, "target_date": today, "stimmung": geprueft.get("stimmung"), "body": geprueft.get("text"),
+        "tipp": geprueft.get("tipp"), "liebe": geprueft.get("liebe"), "beruf": geprueft.get("beruf"),
+        "model": SIGN_HOROSCOPE_MODEL, "lang": lang,
+    }
+    data = _row_to_data(row, sign, "created")
+    # Im Speicher merken, auch wenn das Speichern in der DB scheitert -> kein zweiter Claude-Aufruf
+    _fertig[key] = {**data, "source": "cached"}
+    try:
+        saved = await asyncio.to_thread(save_sign_horoscope, row)
+        if not saved.get("ok"):
+            print(f"[sign-horoscope] Speichern fehlgeschlagen {key}: {saved.get('error')}", flush=True)
+    except Exception as e:
+        print(f"[sign-horoscope] Speichern fehlgeschlagen {key}: {type(e).__name__}: {e}", flush=True)
+    return data
+
+
+async def sign_horoscope(sign: str, lang: str = "de", reserve: Optional[Callable[[], None]] = None) -> dict:
+    """
+    reserve: wird NUR aufgerufen, wenn diese Anfrage eine neue Erzeugung bei Claude startet
+    (Tageslimit). Wirft es (z. B. HTTP 429), wird stattdessen das letzte Horoskop geliefert.
+    """
+    key_sign = _norm_sign(sign)
+    if not key_sign:
         return {"ok": False, "error": "Unbekanntes Sternzeichen."}
+    sign = key_sign
     lang = norm_lang(lang)
     today = datetime.now(timezone.utc).date().isoformat()
+    key = f"{sign}:{lang}:{today}"
+    _aufraeumen(today)
 
-    cached = get_sign_horoscope(sign, today, lang)
-    if cached["ok"] and cached["data"]:
-        return {"ok": True, "data": _row_to_data(cached["data"], sign, "cached")}
+    if key in _fertig:
+        return {"ok": True, "data": dict(_fertig[key])}
 
-    lock = _locks.setdefault(sign + ":" + lang, asyncio.Lock())
-    async with lock:
-        # Waehrend wir gewartet haben, koennte es ein anderer Aufruf erzeugt haben
-        cached = get_sign_horoscope(sign, today, lang)
-        if cached["ok"] and cached["data"]:
-            return {"ok": True, "data": _row_to_data(cached["data"], sign, "cached")}
+    task = _laufend.get(key)
+    if task is None:
+        cached = await asyncio.to_thread(get_sign_horoscope, sign, today, lang)
+        if cached.get("ok") and cached.get("data") and cached["data"].get("body"):
+            data = _row_to_data(cached["data"], sign, "cached")
+            _fertig[key] = data
+            return {"ok": True, "data": dict(data)}
+        task = _laufend.get(key)   # waehrend der DB-Abfrage gestartet?
 
-        if lang == "de":
-            user = (f"Sonnenzeichen: {ce.SIGNS_DE.get(sign, sign)}\n\nDer Himmel heute ({today}):\n{_today_sky_text()}\n\n"
-                    "Schreibe nun das Tageshoroskop als JSON.")
-        else:
-            user = (f"Sun sign: {namen.zeichen(sign, lang)}\n\nThe sky today ({today}):\n{_today_sky_text(lang)}\n\n"
-                    "Now write the daily horoscope as JSON.")
-        try:
-            raw = await _call_claude(with_lang(_system(), lang), user, max_tokens=900, model=SIGN_HOROSCOPE_MODEL)
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        parsed = await lektorat(_parse(raw), lang, immer=False)
-        row = {
-            "sign": sign, "target_date": today, "stimmung": parsed["stimmung"], "body": parsed["text"],
-            "tipp": parsed["tipp"], "liebe": parsed["liebe"], "beruf": parsed["beruf"],
-            "model": SIGN_HOROSCOPE_MODEL, "lang": lang,
-        }
-        saved = save_sign_horoscope(row)
-        return {"ok": True, "data": _row_to_data(saved["data"] if saved.get("ok") and saved.get("data") else row, sign, "created")}
+    if task is None:
+        if key in _fertig:
+            return {"ok": True, "data": dict(_fertig[key])}
+        anzahl, zuletzt = _versuche.get(key, [0, 0.0])
+        gesperrt = anzahl >= MAX_VERSUCHE or (anzahl > 0 and time.monotonic() - zuletzt < PAUSE_NACH_FEHLER_SEK)
+        if not gesperrt and reserve is not None:
+            try:
+                reserve()
+            except Exception:
+                gesperrt = True
+        if gesperrt:
+            ersatz = await _ersatz(sign, lang, today)
+            if ersatz:
+                return {"ok": True, "data": ersatz}
+            return {"ok": False, "error": "Das Tageshoroskop ist gerade nicht verfügbar. Bitte später nochmal versuchen."}
+        task = asyncio.ensure_future(_erzeugen(sign, lang, today, key))
+        _laufend[key] = task
+        task.add_done_callback(lambda _t, k=key: _laufend.pop(k, None))
+
+    try:
+        data = await asyncio.wait_for(asyncio.shield(task), timeout=WARTEN_SEK)
+    except asyncio.TimeoutError:
+        # Dauert zu lange: Erzeugung laeuft im Hintergrund weiter, Besucher bekommt das letzte Horoskop
+        ersatz = await _ersatz(sign, lang, today)
+        if ersatz:
+            return {"ok": True, "data": ersatz}
+        data = await asyncio.shield(task)
+    if data:
+        return {"ok": True, "data": data}
+    ersatz = await _ersatz(sign, lang, today)
+    if ersatz:
+        return {"ok": True, "data": ersatz}
+    return {"ok": False, "error": "Das Tageshoroskop ist gerade nicht verfügbar. Bitte später nochmal versuchen."}
 
 
 # ---------------------------------------------------------------------------
