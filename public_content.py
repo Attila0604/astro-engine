@@ -142,11 +142,12 @@ def _system() -> str:
         "passend zum tatsächlichen Himmel von heute (Planetenstände unten). Es richtet sich an "
         "alle Menschen mit diesem Sonnenzeichen, nicht an eine bestimmte Person – erwähne das "
         "aber nicht ausdrücklich. Beziehe dich konkret auf 1–2 der heutigen Stände, übersetzt in "
-        "Alltagssprache. Kurz, warm, ehrlich, ohne Dramatik.\n\n"
+        "Alltagssprache. Kurz, warm, ehrlich, ohne Dramatik. Weniger ist mehr: niemand liest am Handy "
+        "lange Texte – lieber ein klarer, eleganter Gedanke als viele.\n\n"
         "Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, ohne Markdown, in genau diesem Format:\n"
         "{\n"
         '  "stimmung": "<Schlagzeile, max 7 Wörter>",\n'
-        '  "text": "<2 kurze Absätze, du-Form>",\n'
+        '  "text": "<2–3 Sätze, zusammen höchstens 55 Wörter, du-Form, ein Absatz>",\n'
         '  "tipp": "<ein konkreter Tipp, 1 Satz>",\n'
         '  "liebe": "<1–2 Sätze>",\n'
         '  "beruf": "<1–2 Sätze>"\n'
