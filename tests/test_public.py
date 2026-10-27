@@ -229,3 +229,12 @@ def test_event(client, db):
     assert client.post("/public/event", json={"kind": "boese"}, headers=IP).json()["ok"] is False
     assert client.post("/public/event", json={"kind": "schnellstart", "q": "bio-ig"}, headers=IP).json()["ok"] is True
     assert limits._counts.get(("ip:100.64.0.7", "oeffentlich"), 0) == 0
+    vorher = list(db.zaehler)
+    for ua in ("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+               "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36 (compatible; Googlebot/2.1)",
+               "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 HeadlessChrome/120.0 Safari/537.36"):
+        assert client.post("/public/event", json={"kind": "besuch", "q": "seo-widder"}, headers={**IP, "user-agent": ua}).json()["ok"] is True
+    assert db.zaehler == vorher                       # Roboter zaehlen nicht als Besucher
+    client.post("/public/event", json={"kind": "besuch", "q": "seo-widder"},
+                headers={**IP, "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Instagram 300.0"})
+    assert "q:seo-widder:besuch" in db.zaehler
