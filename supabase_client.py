@@ -413,7 +413,24 @@ def agent_statistik(tage: int, ignorieren: list[str]) -> dict:
     if isinstance(daten, dict):
         daten = {**daten, "quellen": quellen if isinstance(quellen, dict) else {}}
         _schnellstart_ergaenzen(daten, tage)
+        daten["stunden"] = _stunden(tage)
     return _ok(daten)
+
+
+def _stunden(tage: int) -> dict:
+    """Besuche je Tag und Uhrzeit (Wien): {"2026-10-27": {"09": 3, ...}} aus den Zaehlern "stunde:HH"."""
+    try:
+        seit = (datetime.now(timezone.utc).date() - timedelta(days=int(tage))).isoformat()
+        resp = (get_supabase().table("public_usage").select("day,kind,n")
+                .like("kind", "stunde:%").gte("day", seit).execute())
+    except Exception:
+        return {}
+    out: dict = {}
+    for z in _response_data(resp) or []:
+        stunde = str(z.get("kind") or "")[7:]
+        if len(stunde) == 2 and stunde.isdigit():
+            out.setdefault(str(z.get("day"))[:10], {})[stunde] = int(z.get("n") or 0)
+    return out
 
 
 def _schnellstart_ergaenzen(daten: dict, tage: int) -> None:

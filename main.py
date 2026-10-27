@@ -5,6 +5,7 @@ import os
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -918,6 +919,7 @@ def public_invite_match(code: str, payload: InviteMatchIn, request: Request):
 
 
 # Nur diese anonymen Ereignisse darf die App melden (reiner Zaehler).
+WIEN = ZoneInfo("Europe/Vienna")
 PUBLIC_EVENTS = {"register_click", "quickstart_open", "quickstart_done", "besuch", "store_klick"}
 # Nur mit Link-Kennung sinnvoll (der allgemeine Zaehler entsteht schon an anderer Stelle).
 NUR_MIT_QUELLE = {"schnellstart"}
@@ -941,6 +943,9 @@ def public_event(payload: PublicEventIn, request: Request):
     limits.reserve("ip:" + _client_ip(request), "ereignis")
     if payload.kind in PUBLIC_EVENTS:
         increment_public_usage(payload.kind)
+    if payload.kind == "besuch":
+        # Uhrzeit (Wien) zaehlen, fuer "Wann kommen die Besucher" im Content Studio
+        increment_public_usage(f"stunde:{datetime.now(WIEN).hour:02d}")
     if q:
         increment_public_usage(f"q:{q}:{payload.kind}")
     return {"ok": True}
