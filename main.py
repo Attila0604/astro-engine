@@ -920,6 +920,8 @@ def public_invite_match(code: str, payload: InviteMatchIn, request: Request):
 
 # Nur diese anonymen Ereignisse darf die App melden (reiner Zaehler).
 WIEN = ZoneInfo("Europe/Vienna")
+ROBOTER = re.compile(r"bot\b|bot/|crawl|spider|slurp|google-inspectiontool|googleother|lighthouse|headless|"
+                     r"facebookexternalhit|preview|pingdom|uptime|monitor|curl/|python-requests|wget", re.I)
 PUBLIC_EVENTS = {"register_click", "quickstart_open", "quickstart_done", "besuch", "store_klick"}
 # Nur mit Link-Kennung sinnvoll (der allgemeine Zaehler entsteht schon an anderer Stelle).
 NUR_MIT_QUELLE = {"schnellstart"}
@@ -940,6 +942,8 @@ def public_event(payload: PublicEventIn, request: Request):
         q = None
     if payload.kind not in PUBLIC_EVENTS and not (payload.kind in NUR_MIT_QUELLE and q):
         return {"ok": False, "error": "Unbekanntes Ereignis."}
+    if ROBOTER.search(request.headers.get("user-agent") or ""):
+        return {"ok": True}          # Suchmaschinen und Vorschau-Dienste fuehren das Script aus -- keine Besucher
     limits.reserve("ip:" + _client_ip(request), "ereignis")
     if payload.kind in PUBLIC_EVENTS:
         increment_public_usage(payload.kind)
