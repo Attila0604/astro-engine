@@ -89,9 +89,11 @@ def db(monkeypatch):
 def claude(monkeypatch):
     c = FakeClaude()
     monkeypatch.setattr(public_content, "_call_claude", c)
-    # Lektorat nutzt ebenfalls Claude -- nie echt aufrufen
-    async def kein_lektorat(*a, **k):
-        raise AssertionError("Lektorat-Claude darf im Test nicht laufen")
+    # Lektorat nutzt ebenfalls Claude -- nie echt aufrufen; Ungarisch wird immer geprueft (Attrappe: keine Korrekturen)
+    c.lektorat_aufrufe = []
+    async def kein_lektorat(system, text, **k):
+        c.lektorat_aufrufe.append(text)
+        return '{"korrekturen": []}'
     monkeypatch.setattr(agents, "_call_claude", kein_lektorat)
     # Himmelsdaten sind fuer die Tests egal (spart Rechenzeit)
     monkeypatch.setattr(public_content, "_today_sky_text", lambda lang="de": "- Sonne in Waage")

@@ -239,3 +239,10 @@ def test_event(client, db):
     client.post("/public/event", json={"kind": "besuch", "q": "seo-widder"},
                 headers={**IP, "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Instagram 300.0"})
     assert "q:seo-widder:besuch" in db.zaehler
+
+
+def test_ungarisch_immer_lektorat_englisch_nicht(client, db, claude):
+    assert client.get(URL.format("Vir", "hu"), headers=IP).json()["ok"] is True
+    assert len(claude.lektorat_aufrufe) == 1
+    assert client.get(URL.format("Vir", "en"), headers=IP).json()["ok"] is True
+    assert len(claude.lektorat_aufrufe) == 1        # Englisch nur bei deutschen Resten

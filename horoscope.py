@@ -198,8 +198,8 @@ async def generate_horoscope(person: dict, period: str = "daily", at=None, lang:
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    # en/hu/it: nur bei deutschen Resten ein kurzes Lektorat (Horoskope sind haeufig -> Kosten)
-    parsed = await lektorat(_parse_json(raw), lang, immer=False)
+    # Ungarisch: immer muttersprachliches Lektorat; en/it nur bei deutschen Resten (Horoskope sind haeufig -> Kosten)
+    parsed = await lektorat(_parse_json(raw), lang, immer=norm_lang(lang) == "hu")
     return {
         "ok": True,
         "data": {

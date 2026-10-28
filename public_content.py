@@ -318,7 +318,7 @@ async def _erzeugen(sign: str, lang: str, today: str, key: str) -> Optional[dict
                 _fehler[key] = f"unbrauchbare Antwort: {raw[:120]!r}"
                 return None
             try:
-                geprueft = await lektorat(parsed, lang, immer=False)
+                geprueft = await lektorat(parsed, lang, immer=norm_lang(lang) == "hu")   # Ungarisch immer pruefen
                 if not _brauchbar(geprueft):
                     geprueft = parsed
             except Exception as e:  # Lektorat ist nur Feinschliff -- nie daran scheitern
