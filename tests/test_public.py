@@ -227,6 +227,7 @@ def test_event(client, db):
     assert db.zaehler[0] == "besuch" and db.zaehler[2] == "q:p12:besuch"
     assert db.zaehler[1].startswith("stunde:") and len(db.zaehler[1]) == 9      # Uhrzeit des Besuchs (Wien)
     assert client.post("/public/event", json={"kind": "boese"}, headers=IP).json()["ok"] is False
+    assert client.post("/public/event", json={"kind": "horoskop_gelesen", "q": "bio-ig"}, headers=IP).json()["ok"] is True
     assert client.post("/public/event", json={"kind": "schnellstart", "q": "bio-ig"}, headers=IP).json()["ok"] is True
     assert limits._counts.get(("ip:100.64.0.7", "oeffentlich"), 0) == 0
     vorher = list(db.zaehler)
