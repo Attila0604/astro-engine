@@ -54,6 +54,80 @@ _PHASES = [
 ]
 _SYNODIC = 29.530588853
 
+# Planeten fuer "Wo steht was" und die Winkel des Tages
+_PLANETEN = [
+    (swe.SUN, "Sonne", "Sun"), (swe.MOON, "Mond", "Moon"), (swe.MERCURY, "Merkur", "Mercury"),
+    (swe.VENUS, "Venus", "Venus"), (swe.MARS, "Mars", "Mars"), (swe.JUPITER, "Jupiter", "Jupiter"),
+    (swe.SATURN, "Saturn", "Saturn"), (swe.URANUS, "Uranus", "Uranus"), (swe.NEPTUNE, "Neptun", "Neptune"),
+    (swe.PLUTO, "Pluto", "Pluto"),
+]
+_ASPEKTE = [(0, "conjunction", 8), (60, "sextile", 4), (90, "square", 6), (120, "trine", 6), (180, "opposition", 7)]
+_ASPEKT_KOERPER = {"Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn"}
+# Herrscher je Zeichen (klassisch + modern), fuer "Herrscher rueckläufig"
+_HERRSCHER = {"Ari": ["Mars"], "Tau": ["Venus"], "Gem": ["Mercury"], "Can": ["Moon"], "Leo": ["Sun"],
+              "Vir": ["Mercury"], "Lib": ["Venus"], "Sco": ["Mars", "Pluto"], "Sag": ["Jupiter"],
+              "Cap": ["Saturn"], "Aqu": ["Saturn", "Uranus"], "Pis": ["Jupiter", "Neptune"]}
+
+
+def _planeten(jd: float) -> list[dict]:
+    out = []
+    for body, name, key in _PLANETEN:
+        lon = _lon(jd, body)
+        out.append({"planet": name, "key": key, "sign": _sign_key(lon), "sign_de": _sign_de(lon),
+                    "degree": round(lon % 30, 1), "lon": round(lon, 2),
+                    "retrograde": key not in ("Sun", "Moon") and _speed(jd, body) < 0})
+    return out
+
+
+def _aspekte(planeten: list[dict]) -> list[dict]:
+    """Hauptwinkel zwischen den persoenlichen Planeten (und Jupiter/Saturn), engste zuerst."""
+    p = [x for x in planeten if x["key"] in _ASPEKT_KOERPER]
+    out = []
+    for i in range(len(p)):
+        for j in range(i + 1, len(p)):
+            d = abs(p[i]["lon"] - p[j]["lon"]) % 360
+            d = 360 - d if d > 180 else d
+            for winkel, name, orb in _ASPEKTE:
+                if abs(d - winkel) <= orb:
+                    out.append({"a": p[i]["key"], "b": p[j]["key"], "aspect": name, "orb": round(abs(d - winkel), 1)})
+    return sorted(out, key=lambda x: x["orb"])
+
+
+def _zeichen_heute(planeten: list[dict], neu: datetime, voll: datetime, now: datetime) -> list[dict]:
+    """Wie stark jedes der 12 Zeichen heute angesprochen ist (Punkte + Gruende als Schluessel), staerkste zuerst.
+    Gruende: moon_in / moon_opposite / moon_square / moon_trine, sun_in, <planet>_in (Merkur/Venus/Mars),
+    ruler_retro:<planet>, new_moon_in / full_moon_in / full_moon_opposite (Neu-/Vollmond in 2 Tagen)."""
+    pos = {x["key"]: x for x in planeten}
+    idx = {k: i for i, k in enumerate(_SIGN_KEYS)}
+    ergebnis = {k: {"sign": k, "sign_de": SIGNS_DE.get(k, k), "score": 0, "reasons": []} for k in _SIGN_KEYS}
+
+    def plus(sign, punkte, grund):
+        ergebnis[sign]["score"] += punkte
+        ergebnis[sign]["reasons"].append(grund)
+
+    m = idx[pos["Moon"]["sign"]]
+    plus(_SIGN_KEYS[m], 5, "moon_in")
+    plus(_SIGN_KEYS[(m + 6) % 12], 3, "moon_opposite")
+    for d in (3, 9):
+        plus(_SIGN_KEYS[(m + d) % 12], 2, "moon_square")
+    for d in (4, 8):
+        plus(_SIGN_KEYS[(m + d) % 12], 1, "moon_trine")
+    plus(pos["Sun"]["sign"], 3, "sun_in")
+    for k in ("Mercury", "Venus", "Mars"):
+        plus(pos[k]["sign"], 2, f"{k.lower()}_in")
+    for sign, herrscher in _HERRSCHER.items():
+        for h in herrscher:
+            if pos.get(h, {}).get("retrograde"):
+                plus(sign, 2, f"ruler_retro:{h}")
+    for wann, name in ((neu, "new_moon"), (voll, "full_moon")):
+        if abs((wann - now).total_seconds()) <= 2 * 86400:
+            jd = _jd(wann)
+            s = idx[_sign_key(_lon(jd, swe.MOON))]
+            plus(_SIGN_KEYS[s], 3, f"{name}_in")
+            if name == "full_moon":
+                plus(_SIGN_KEYS[(s + 6) % 12], 2, "full_moon_opposite")
+    return sorted(ergebnis.values(), key=lambda x: (-x["score"], idx[x["sign"]]))
+
 _cache_lock = threading.Lock()
 _cache: dict[str, dict] = {}
 
@@ -157,6 +231,10 @@ def _compute(now: datetime) -> dict:
 
     new_moon = _next_lunation(jd, 0.0)
     full_moon = _next_lunation(jd, 180.0)
+    # gerade vergangener Neu-/Vollmond zaehlt auch (z. B. gestern Abend)
+    letzter_neu = _next_lunation(jd - 3, 0.0)
+    letzter_voll = _next_lunation(jd - 3, 180.0)
+    planeten = _planeten(jd)
 
     return {
         "at_utc": now.astimezone(timezone.utc).isoformat(timespec="minutes"),
@@ -173,6 +251,10 @@ def _compute(now: datetime) -> dict:
         "retrograde_soon": upcoming,
         "next_new_moon": new_moon.isoformat(timespec="minutes"),
         "next_full_moon": full_moon.isoformat(timespec="minutes"),
+        "planets": [{k: v for k, v in x.items() if k != "lon"} for x in planeten],
+        "aspects": _aspekte(planeten)[:8],
+        "signs_today": _zeichen_heute(planeten, min(new_moon, letzter_neu, key=lambda d: abs((d - now).total_seconds())),
+                                      min(full_moon, letzter_voll, key=lambda d: abs((d - now).total_seconds())), now),
     }
 
 

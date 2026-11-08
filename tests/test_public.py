@@ -246,3 +246,16 @@ def test_ungarisch_immer_lektorat_englisch_nicht(client, db, claude):
     assert len(claude.lektorat_aufrufe) == 1
     assert client.get(URL.format("Vir", "en"), headers=IP).json()["ok"] is True
     assert len(claude.lektorat_aufrufe) == 1        # Englisch nur bei deutschen Resten
+
+
+def test_sky_planeten_winkel_und_zeichen():
+    from datetime import date
+    import sky
+    d = sky.sky_for_day(date(2026, 11, 9))["data"]
+    assert {p["key"] for p in d["planets"]} >= {"Sun", "Moon", "Venus", "Mars", "Saturn"}
+    assert all(p["sign"] in sky._SIGN_KEYS and 0 <= p["degree"] < 30 for p in d["planets"])
+    assert d["aspects"] and all(a["aspect"] in {"conjunction", "sextile", "square", "trine", "opposition"} for a in d["aspects"])
+    z = d["signs_today"]
+    assert len(z) == 12 and z[0]["score"] >= z[-1]["score"]
+    mond = next(p["sign"] for p in d["planets"] if p["key"] == "Moon")
+    assert "moon_in" in next(x for x in z if x["sign"] == mond)["reasons"]
