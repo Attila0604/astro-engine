@@ -151,6 +151,18 @@ async def start_supabase_keepalive():
         _keepalive_log(f"FEHLER - Keepalive konnte nicht gestartet werden: {type(e).__name__}: {e}")
 
 
+@app.on_event("startup")
+async def start_erinnerung():
+    """Einmalige Erinnerung an die E-Mail-Bestaetigung (erinnerung.py)."""
+    try:
+        import erinnerung
+        stunden = erinnerung.intervall_stunden()
+        if stunden > 0:
+            asyncio.create_task(erinnerung.schleife(stunden))
+    except Exception as e:  # noqa: BLE001 -- darf den Start nie verhindern
+        print(f"[Erinnerung] nicht gestartet: {e}", flush=True)
+
+
 @app.on_event("shutdown")
 async def stop_supabase_keepalive():
     try:
